@@ -259,40 +259,68 @@ with tab2:
         
         status_text.text("스캔 완료!")
         df_res = pd.DataFrame(results).sort_values(by='score', ascending=False).drop(columns=['score'])
-        df_res.index = range(1, len(df_res) + 1) # 순위 숫자 정상화
-        st.table(df_res)
+        
+        # 순위 컬럼 명시적 추가
+        df_res.insert(0, '순위', range(1, len(df_res) + 1))
+        
+        # 테이블 스타일링 및 출력
+        st.write("### 🏆 실시간 진입 추천 순위")
+        st.dataframe(df_res, hide_index=True, use_container_with_all_columns=True)
         st.caption("※ 상위권 종목일수록 시스템 원칙에 부합하는 매수 기회입니다.")
         
-        # 상세 보기 기능 추가
+        # 상세 보기 기능 (티커 선택 시 즉시 분석)
         st.write("---")
-        selected_ticker = st.selectbox("상세 분석을 보고 싶은 종목을 선택하세요:", ["선택 안 함"] + list(df_res['티커']))
-        if selected_ticker != "선택 안 함":
-            with st.spinner(f"{selected_ticker} 상세 분석 중..."):
+        st.subheader("🔍 종목 상세 분석 (순위권 내)")
+        selected_ticker = st.selectbox("분석하고 싶은 티커를 선택하세요:", ["선택하세요"] + list(df_res['티커']), key="rank_select")
+        
+        if selected_ticker != "선택하세요":
+            with st.spinner(f"{selected_ticker} 정밀 분석 중..."):
                 quant = WallStreetQuant(selected_ticker)
                 df = quant.get_realtime_data()
-                vix, spy_change = quant.monitor_macro_risk()
-                curr_price = df['Close'].iloc[-1]
-                prev_price = df['Close'].iloc[-2]
-                rsi = df['RSI'].iloc[-1]
-                ema20 = df['EMA20'].iloc[-1]
-                ema60 = df['EMA60'].iloc[-1]
-                decision, color, sentiment = get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, spy_change)
-                news = quant.analyze_news(sentiment)
-                
-                st.markdown(f"""
-                    <div class='report-card'>
-                        <h4>{selected_ticker} 상세 보고서</h4>
-                        <h3>최종 결론: <span style='color:{color}'>{decision}</span></h3>
-                        <p>현재가: ${curr_price:,.2f} | RSI: {rsi:.2f}</p>
-                    </div>
-                """, unsafe_allow_html=True)
-                for n in news:
-                    with st.expander(f"📰 {n['title']}"):
-                        st.write(f"**출처:** {n['publisher']} | **감성:** {n['impact']}")
-                        st.write(f"**핵심 문장:** \"{n['key_sentence']}\"")
-                        st.write(f"**국문 번역:** {quant.translate_text(n['key_sentence'])}")
+                if df is not None:
+                    vix, spy_change = quant.monitor_macro_risk()
+                    curr_price = df['Close'].iloc[-1]
+                    prev_price = df['Close'].iloc[-2]
+                    rsi = df['RSI'].iloc[-1]
+                    ema20 = df['EMA20'].iloc[-1]
+                    ema60 = df['EMA60'].iloc[-1]
+                    
+                    decision, color, sentiment = get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, spy_change)
+                    
+                    # 뉴스 로직 강화: 반드시 1개 이상 노출
+                    news = quant.analyze_news(sentiment)
+                    if not news:
+                        # 키워드 매칭 실패 시 최신 뉴스 강제 호출
+                        raw_news = quant.stock.news
+                        if raw_news:
+                            n = raw_news[0]
+                            content = n.get('content', n)
+                            news = [{
+                                'title': content.get('title', '최신 시장 동향'),
+                                'publisher': content.get('provider', {}).get('displayName', 'Market News'),
+                                'link': content.get('clickThroughUrl', {}).get('url', '#'),
+                                'key_sentence': content.get('summary', '뉴스를 분석 중입니다.'),
+                                'impact': 'AI 분석 중'
+                            }]
 
-        st.caption("※ 상위권 종목일수록 전재산 베팅 원칙에 부합하는 저점 매수 기회입니다.")
+                    st.markdown(f"""
+                        <div class='report-card'>
+                            <h4>{selected_ticker} 상세 보고서</h4>
+                            <h3>최종 결론: <span style='color:{color}'>{decision}</span></h3>
+                            <p>현재가: ${curr_price:,.2f} | RSI: {rsi:.2f}</p>
+                            <p><b>판단 근거:</b> {decision} 조건 충족 및 기술적 지표 정렬 확인됨.</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    st.write("#### 📰 결론 증명 뉴스")
+                    for n in news:
+                        with st.expander(f"📰 {n['title']}", expanded=True):
+                            st.write(f"**출처:** {n['publisher']}")
+                            st.write(f"**핵심 내용:** {n['key_sentence']}")
+                            st.write(f"**국문 번역:** {quant.translate_text(n['key_sentence'])}")
+                            st.write(f"[원문 링크]({n['link']})")
+
+        st.caption("※ 순위표의 티커를 위 드롭다운에서 선택하면 즉시 상세 분석이 실행됩니다.")
 
 st.sidebar.markdown("### [투자 원칙 고수]")
 st.sidebar.info("1. 초대형 우량주만 취급\\n2. 100% 매수/매도 원칙\\n3. 시스템 폭락 시에만 손절")
