@@ -77,11 +77,11 @@ class ProfessionalQuant:
     def analyze_news(self):
         # 뉴스가 아예 없는 상황을 방지하기 위한 기본 폴백(Fallback) 메시지 세팅
         fallback_news = [{
-            'title': f"{self.ticker} 최근 주요 변동 사항 없음",
+            'title': f"[{self.ticker}] 최근 주요 변동 사항 없음",
             'publisher': "System Analyst",
             'link': "#",
             'summary': "현재 시장에서 해당 종목의 펀더멘털을 훼손할 만한 치명적 악재나 급격한 호재가 포착되지 않았습니다.",
-            'key_sentence': "No significant news reported recently. The fundamental remains stable.",
+            'key_sentence': f"{self.ticker} maintains stable fundamentals with no critical anomalies detected.",
             'impact': "⚪ 기타(중립)"
         }]
 
@@ -89,35 +89,57 @@ class ProfessionalQuant:
             news_list = self.stock.news
             if not news_list: return fallback_news
             
-            impact_keywords = ['crash', 'collapse', 'recession', 'slump', 'downfall', 'bankruptcy', 'bear market', 'inflation', 'rate hike', 'layoff', 'lawsuit', 'investigation', 'plunge', 'missed']
-            positive_keywords = ['growth', 'breakthrough', 'dividend', 'buyback', 'partnership', 'earnings beat', 'upgrade', 'surge', 'record', 'soar']
+            # 종목 필터링용 식별자 (티커명 또는 회사 짧은 이름)
+            try:
+                company_name = self.stock.info.get('shortName', self.ticker).split()[0].lower()
+            except:
+                company_name = self.ticker.lower()
+            target_ids = [self.ticker.lower(), company_name]
+            
+            # 증명 가능한 강력한 팩트 기반 키워드
+            pos_kws = ['surpass', 'beat estimate', 'upgrade', 'record high', 'raised guidance', 'breakthrough', 'fda approval', 'awarded', 'soar', 'jumped']
+            neg_kws = ['missed estimate', 'downgrade', 'lawsuit', 'investigation', 'layoff', 'bankruptcy', 'slump', 'plunge', 'cut guidance', 'warning', 'sued']
             
             analyzed_news = []
-            for n in news_list[:3]:
+            for n in news_list:
+                if len(analyzed_news) >= 3: break # 최대 3개만 추출
+                
                 content = n.get('content', n)
                 title = content.get('title', '')
                 summary = content.get('summary', '요약 정보 없음')
-                provider = content.get('provider', {}).get('displayName', 'Unknown Source')
-                link = content.get('clickThroughUrl', {}).get('url', '#')
+                full_text = (title + " " + summary).lower()
                 
-                # 감성 분석 (호재/악재 판별)
-                is_neg = any(kw in title.lower() or kw in summary.lower() for kw in impact_keywords)
-                is_pos = any(kw in title.lower() or kw in summary.lower() for kw in positive_keywords)
+                # 1. 관련성 검증: 이 뉴스가 정말 해당 종목에 대한 이야기인가?
+                if not any(tid in full_text for tid in target_ids):
+                    continue # 타 종목 섞인 뉴스면 철저히 배제
+                    
+                # 2. 감성 판별
+                is_pos = any(kw in full_text for kw in pos_kws)
+                is_neg = any(kw in full_text for kw in neg_kws)
                 
-                if is_pos: impact = "🟢 호재"
-                elif is_neg: impact = "🔴 악재"
-                else: impact = "⚪ 기타(중립)"
-                
-                # 핵심 문장 추출 (키워드가 포함된 문장 또는 첫 문장)
                 sentences = summary.split('. ')
-                key_sentence = next((s + "." for s in sentences if any(kw in s.lower() for kw in impact_keywords + positive_keywords)), sentences[0] + "." if sentences else title)
+                if not sentences: sentences = [title]
                 
+                # 3. 감성 증명 및 핵심 문장 추출
+                if is_pos and not is_neg:
+                    impact = "🟢 호재"
+                    # 호재 증거: 긍정 키워드가 포함된 문장 우선 추출
+                    key_sentence = next((s + "." for s in sentences if any(kw in s.lower() for kw in pos_kws)), title)
+                elif is_neg:
+                    impact = "🔴 악재"
+                    # 악재 증거: 부정 키워드가 포함된 문장 우선 추출
+                    key_sentence = next((s + "." for s in sentences if any(kw in s.lower() for kw in neg_kws)), title)
+                else:
+                    impact = "⚪ 기타(중립)"
+                    # 중립 팩트: 애널리스트가 스스로 판단할 수 있도록 '숫자(수치)'가 들어간 팩트 문장 우선 추출
+                    key_sentence = next((s + "." for s in sentences if any(char.isdigit() for char in s)), sentences[0] + ".")
+
                 analyzed_news.append({
                     'title': title,
-                    'publisher': provider,
-                    'link': link,
+                    'publisher': content.get('provider', {}).get('displayName', 'Unknown Source'),
+                    'link': content.get('clickThroughUrl', {}).get('url', '#'),
                     'summary': summary,
-                    'key_sentence': key_sentence,
+                    'key_sentence': key_sentence.strip(),
                     'impact': impact
                 })
             
@@ -226,8 +248,8 @@ def render_analysis_ui(ticker):
             for n in news:
                 with st.expander(f"[{n['impact']}] {n['title']}", expanded=True):
                     st.write(f"**출처:** {n['publisher']}")
-                    st.write(f"**핵심 문장(Key Sentence):** {n['key_sentence']}")
-                    st.write(f"**번역(Translation):** {engine.translate_text(n['key_sentence'])}")
+                    st.write(f"**증명/핵심 문장(Key Sentence):** {n['key_sentence']}")
+                    st.write(f"**핵심 번역(Translation):** {engine.translate_text(n['key_sentence'])}")
                     st.write(f"[원문 전체 보기]({n['link']})")
         else:
             st.error("데이터 로드 실패.")
