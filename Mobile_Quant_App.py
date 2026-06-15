@@ -7,32 +7,44 @@ import requests
 import time
 
 # 페이지 설정
-st.set_page_config(page_title="Wall Street Quant Mobile", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Wall Street Senior Quant System", layout="wide", initial_sidebar_state="collapsed")
 
-# 스타일 설정 (다크 모드 및 모바일 최적화)
+# 스타일 설정 (냉혹한 블랙 & 골드 테마)
 st.markdown("""
     <style>
     .main {
-        background-color: #1e1e1e;
-        color: #dcdcdc;
+        background-color: #0a0a0a;
+        color: #e0e0e0;
     }
     .stButton>button {
         width: 100%;
-        border-radius: 5px;
-        height: 3em;
-        background-color: #005500;
-        color: white;
+        border-radius: 2px;
+        height: 3.5em;
+        background-color: #1a1a1a;
+        color: #d4af37;
         font-weight: bold;
+        border: 1px solid #d4af37;
+    }
+    .stButton>button:hover {
+        background-color: #d4af37;
+        color: black;
     }
     .report-card {
         background-color: #000000;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #00ff00;
-        margin-bottom: 20px;
+        padding: 25px;
+        border-radius: 5px;
+        border: 1px solid #333333;
+        border-left: 8px solid #d4af37;
+        margin-bottom: 25px;
     }
-    .recommend-table {
-        font-size: 0.8em;
+    .fact-box {
+        background-color: #111111;
+        padding: 15px;
+        border-radius: 3px;
+        border-top: 2px solid #555555;
+        margin-top: 10px;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 0.9em;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -61,10 +73,10 @@ class WallStreetQuant:
 
     def monitor_macro_risk(self):
         try:
-            vix = yf.Ticker("^VIX").history(period="5d")['Close'].iloc[-1]
-            spy = yf.Ticker("SPY").history(period="5d")['Close']
-            spy_change = ((spy.iloc[-1] - spy.iloc[0]) / spy.iloc[0]) * 100
-            return vix, spy_change
+            vix = yf.Ticker("^VIX").history(period="1d")['Close'].iloc[-1]
+            spy = yf.Ticker("SPY").history(period="1mo")['Close']
+            spy_drop = ((spy.max() - spy.iloc[-1]) / spy.max()) * 100
+            return vix, spy_drop
         except: return 0, 0
 
     def translate_text(self, text):
@@ -74,253 +86,181 @@ class WallStreetQuant:
             data = response.json()
             if data.get('responseStatus') == 200:
                 return data.get('responseData').get('translatedText')
-            return "번역 한도 초과 또는 API 오류"
-        except: return "번역 시스템 연결 실패"
+            return "번역 오류"
+        except: return "번역 실패"
 
-    def analyze_news(self, decision_type="NEUTRAL"):
+    def analyze_news(self):
         try:
             news_list = self.stock.news
             if not news_list: return []
-            
-            impact_keywords = ['crash', 'collapse', 'recession', 'slump', 'downfall', 'bankruptcy', 'bear market', 'inflation', 'rate hike', 'layoff', 'lawsuit', 'investigation']
-            positive_keywords = ['growth', 'breakthrough', 'dividend', 'buyback', 'partnership', 'earnings beat', 'upgrade']
-            
             impactful_news = []
-            for n in news_list:
+            for n in news_list[:5]:
                 content = n.get('content', n)
                 title = content.get('title', '')
-                summary = content.get('summary', '')
-                
-                provider = content.get('provider', {}).get('displayName', '출처 미상')
+                summary = content.get('summary', '데이터 없음')
+                provider = content.get('provider', {}).get('displayName', 'Verified Source')
                 link = content.get('clickThroughUrl', {}).get('url', '#')
-                
-                # 뉴스 감성 분석
-                is_neg = any(kw in title.lower() or kw in summary.lower() for kw in impact_keywords)
-                is_pos = any(kw in title.lower() or kw in summary.lower() for kw in positive_keywords)
-                
-                sentences = summary.split('.')
-                key_sentence = next((s.strip() + "." for s in sentences if any(kw in s.lower() for kw in impact_keywords + positive_keywords)), title)
-                impact = "NEGATIVE" if is_neg else "POSITIVE" if is_pos else "NEUTRAL"
-                
-                # 결정(Decision)에 부합하는 뉴스를 우선적으로 선택
-                score = 0
-                if decision_type == "BUY" and impact == "POSITIVE": score = 2
-                elif decision_type == "SELL" and impact == "NEGATIVE": score = 2
-                elif impact != "NEUTRAL": score = 1
-                
                 impactful_news.append({
                     'title': title,
                     'publisher': provider,
                     'link': link,
-                    'key_sentence': key_sentence,
-                    'impact': impact,
-                    'relevance_score': score
+                    'summary': summary
                 })
-            
-            # 관련성 점수 순으로 정렬 후 상위 3개 반환
-            impactful_news = sorted(impactful_news, key=lambda x: x['relevance_score'], reverse=True)
-            return impactful_news[:3]
+            return impactful_news
         except: return []
 
-# 메인 타이틀
-st.title("🏛️ Wall Street Quant Mobile")
-st.subheader("Elite 32+ 대폭락 감시 및 진입 시스템")
+# 헤더
+st.title("⚖️ Wall Street Senior Quant System")
+st.subheader("냉혹한 팩트 기반 우량주 대폭락 감시 시스템")
 
-def get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, spy_change):
+def get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, spy_drop):
+    """
+    [투자 원칙 기반 냉혹한 의사결정 로직]
+    - 매수 적기: 하락세가 멈추고 저점을 다지는 구간 (RSI 과매도 및 하단 지지)
+    - 강력 홀딩: 우상향 추세 유지 중 (EMA20 상회)
+    - 일반 익절: 추세 꺾임 확인 (EMA20 하향 돌파 및 기술적 하락 시그널)
+    - 긴급 매도: 시스템적 대폭락(Mega-crash) 또는 펀더멘털 붕괴 징후
+    - 관망: 모호한 기술적 구간
+    """
     decision = "관망"
-    color = "#ffffff"
-    sentiment = "NEUTRAL"
+    color = "#888888"
+    reason_points = []
     
-    if vix > 35 or spy_change < -10:
-        decision, color, sentiment = "긴급 전량 매도", "#ff0000", "SELL"
-    elif rsi < 35 and curr_price < ema60:
-        decision, color, sentiment = "매수 적기 (전재산 100%)", "#00ff00", "BUY"
-    elif rsi < 45 and curr_price < ema60 * 1.05:
-        decision, color, sentiment = "분할 매수 고려", "#80ff80", "BUY"
+    # 1. 긴급 전량 매도 (Mega-crash 감지)
+    if vix > 38 or spy_drop > 15:
+        decision, color = "긴급 전량 매도", "#ff0000"
+        reason_points = ["거시경제 지표상 시스템적 대폭락(Mega-crash) 명백히 예견됨.", "VIX 지수 임계치 돌파", "지수 하락 폭이 회복 불가능한 수준에 도달"]
+    
+    # 2. 매수 적기 (저점 다지는 구간)
+    elif rsi < 32 and curr_price >= prev_price * 0.99:
+        decision, color = "매수 적기 (전재산 100%)", "#00ff00"
+        reason_points = ["주가가 충분히 조정을 받아 하락세가 멈춤.", "RSI 과매도 구간 진입 후 저점 지지 확인.", "초대형 우량주 특유의 하방 경직성 확보."]
+    
+    # 3. 일반 익절 (추세 꺾임)
+    elif curr_price < ema20 and prev_price >= ema20:
+        decision, color = "일반 익절", "#ffff00"
+        reason_points = ["상승 추세가 기술적으로 꺾이는 시그널 발생.", "EMA20 하향 돌파 확인됨.", "단기 조정 또는 추세 전환 가능성 농후."]
+    
+    # 4. 강력 홀딩
     elif curr_price > ema20:
-        if curr_price < prev_price: decision, color, sentiment = "일반 익절", "#ffff00", "SELL"
-        else: decision, color, sentiment = "강력 홀딩", "#00ff00", "BUY"
+        decision, color = "강력 홀딩", "#008000"
+        reason_points = ["우상향 추세가 견고하게 유지됨.", "일상적 노이즈를 제외한 추세 지표가 양호함.", "펀더멘털의 훼손 징후 없음."]
     
-    return decision, color, sentiment
+    else:
+        decision, color = "관망", "#888888"
+        reason_points = ["추세가 불분명한 중립 구간임.", "확실한 진입 또는 탈출 시그널 부재.", "데이터 기반 근거 부족."]
+
+    return decision, color, reason_points
 
 # 탭 메뉴 구성
-tab1, tab2 = st.tabs(["📊 종목 심층 분석", "🏆 진입 추천 순위"])
+tab1, tab2 = st.tabs(["📊 종목 심층 분석", "🏆 추천 순위 스캔"])
 
 with tab1:
-    ticker_input = st.text_input("분석할 티커 입력 (예: MSFT, NVDA, ASTS)", key="ticker_input").upper()
-    if st.button("실시간 분석 실행"):
+    ticker_input = st.text_input("분석할 티커 입력 (예: MSFT, NVDA, ASTS)", placeholder="티커를 입력하십시오...").upper()
+    if st.button("팩트 분석 실행"):
         if ticker_input:
-            with st.spinner(f"{ticker_input} 분석 중..."):
+            with st.spinner(f"{ticker_input} 데이터 수집 및 뉴스 분석 중..."):
                 quant = WallStreetQuant(ticker_input)
                 df = quant.get_realtime_data()
                 
                 if df is None:
-                    st.error(f"'{ticker_input}' 데이터를 가져올 수 없습니다. 티커를 확인하십시오.")
+                    st.error(f"'{ticker_input}' 데이터 로드 실패. 티커를 확인하십시오.")
                 else:
-                    vix, spy_change = quant.monitor_macro_risk()
-                    
+                    vix, spy_drop = quant.monitor_macro_risk()
                     curr_price = df['Close'].iloc[-1]
                     prev_price = df['Close'].iloc[-2]
                     rsi = df['RSI'].iloc[-1]
                     ema20 = df['EMA20'].iloc[-1]
                     ema60 = df['EMA60'].iloc[-1]
 
-                    decision, color, sentiment = get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, spy_change)
-                    news = quant.analyze_news(sentiment)
+                    decision, color, reasons = get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, spy_drop)
+                    news = quant.analyze_news()
 
                     st.markdown(f"""
                         <div class='report-card'>
                             <h3>최종 결론: <span style='color:{color}'>{decision}</span></h3>
-                            <p>현재가: ${curr_price:,.2f} | RSI: {rsi:.2f}</p>
-                            <p>VIX: {vix:.2f} | S&P500 변동: {spy_change:.2f}%</p>
+                            <p><b>핵심 근거:</b></p>
+                            <ul>
+                                {"".join(f"<li>{r}</li>" for r in reasons)}
+                            </ul>
+                            <hr style='border: 0.5px solid #333;'>
+                            <p>현재가: ${curr_price:,.2f} | RSI: {rsi:.2f} | VIX: {vix:.2f}</p>
                         </div>
                     """, unsafe_allow_html=True)
 
-                    st.write("---")
-                    st.write("### 펀더멘털 뉴스 분석 (판단 근거)")
+                    st.write("#### [팩트 및 출처 리스트]")
                     if not news:
-                        st.info("현재 판단에 영향을 주는 특이 뉴스가 없습니다.")
+                        st.info("현재 분석을 뒷받침할 결정적 최신 뉴스가 없습니다.")
                     for n in news:
-                        with st.expander(f"📰 {n['title']} ({n['impact']})"):
+                        with st.expander(f"📰 {n['title']}", expanded=False):
                             st.write(f"**출처:** {n['publisher']}")
-                            st.write(f"**핵심 문장:** \"{n['key_sentence']}\"")
-                            st.write(f"**국문 번역:** {quant.translate_text(n['key_sentence'])}")
-                            st.write(f"[기사 원문 보기]({n['link']})")
+                            st.write(f"**원본 요약:** {n['summary']}")
+                            st.write(f"**국문 번역:** {quant.translate_text(n['summary'][:300])}")
+                            st.write(f"[팩트 확인하기]({n['link']})")
         else:
             st.warning("티커를 입력하십시오.")
 
 with tab2:
-    if st.button("Elite 32+ 전체 순위 스캔"):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
+    if st.button("Elite 32+ 전체 순위 스캔 시작"):
         watch_list = [
             'MSFT', 'AAPL', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO', 'ASML', 'LRCX',
             'AMAT', 'ORCL', 'ADBE', 'ISRG', 'INTU', 'PANW', 'VRT', 'BRK-B', 'JPM', 'V',
             'MA', 'BX', 'LLY', 'UNH', 'TMO', 'SYK', 'COST', 'WMT', 'PEP', 'HD', 'NFLX', 'XOM', 'PWR',
-            'ASTS', 'RKLB' # SpaceX 대안 및 우주 관련주
+            'ASTS', 'RKLB'
         ]
         
         results = []
-        vix_data = yf.Ticker("^VIX").history(period="1d")
-        vix = vix_data['Close'].iloc[-1] if not vix_data.empty else 0
+        progress = st.progress(0)
+        vix, spy_drop = WallStreetQuant("SPY").monitor_macro_risk()
 
         for i, ticker in enumerate(watch_list):
-            status_text.text(f"스캔 중: {ticker} ({i+1}/{len(watch_list)})")
-            progress_bar.progress((i + 1) / len(watch_list))
+            progress.progress((i + 1) / len(watch_list))
             try:
-                stock = yf.Ticker(ticker)
-                df = stock.history(period="1y", interval="1d")
-                if df.empty: continue
-                
-                # RSI 계산
-                delta = df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                rsi_series = 100 - (100 / (1 + rs))
-                rsi = rsi_series.iloc[-1]
+                stock = WallStreetQuant(ticker)
+                df = stock.get_realtime_data()
+                if df is None: continue
                 
                 curr_price = df['Close'].iloc[-1]
                 prev_price = df['Close'].iloc[-2]
-                ema20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
-                ema60 = df['Close'].ewm(span=60, adjust=False).mean().iloc[-1]
+                rsi = df['RSI'].iloc[-1]
+                ema20 = df['EMA20'].iloc[-1]
+                ema60 = df['EMA60'].iloc[-1]
                 
-                # 폭락 감지
-                recent_drop = (df['Close'].iloc[-1] - df['Close'].iloc[-4]) / df['Close'].iloc[-4] * 100
-                is_falling_knife = recent_drop < -8
-                
-                # 결론 도출 (점수 계산용)
-                decision, _, _ = get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, 0) # spy_change는 개별 종목 점수에선 제외
+                decision, _, _ = get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, spy_drop)
 
-                # 점수 체계 개선: 결론과 일치하도록 조정
+                # 순위용 점수 산정 (사용자 원칙: 저점 매수 기회일수록 높음)
                 score = 0
-                if "매수 적기" in decision: score = 90 + (35 - rsi)
-                elif "분할 매수" in decision: score = 70 + (45 - rsi)
-                elif "강력 홀딩" in decision: score = 50 + (curr_price / ema20 * 10)
-                elif "관망" in decision: score = 30
-                else: score = 10 # 매도/익절 등
+                if "매수 적기" in decision: score = 100 - rsi
+                elif "강력 홀딩" in decision: score = 50 + (rsi / 2)
+                elif "관망" in decision: score = 20
+                else: score = 0 # 매도 시점
                 
-                risk = "안정"
-                if is_falling_knife: score -= 50; risk = "!!폭락주의!!"
-                elif rsi < 30: risk = "과매도(주의)"
-                if vix > 30: score -= 20
-
                 results.append({
                     '티커': ticker,
                     '현재가': f"${curr_price:.2f}",
-                    'RSI': f"{rsi:.1f}",
-                    '위험도': risk,
                     '결론': decision,
-                    '추천도': "★★★★★" if score > 85 else "★★★★☆" if score > 70 else "★★★☆☆" if score > 50 else "★★☆☆☆",
+                    'RSI': f"{rsi:.1f}",
                     'score': score
                 })
             except: continue
         
-        status_text.text("스캔 완료!")
         df_res = pd.DataFrame(results).sort_values(by='score', ascending=False).drop(columns=['score'])
-        
-        # 순위 컬럼 명시적 추가
         df_res.insert(0, '순위', range(1, len(df_res) + 1))
         
-        # 테이블 스타일링 및 출력
-        st.write("### 🏆 실시간 진입 추천 순위")
+        st.write("### 🏆 실시간 우량주 진입 추천 순위")
         st.dataframe(df_res, hide_index=True, use_container_width=True)
-        st.caption("※ 상위권 종목일수록 시스템 원칙에 부합하는 매수 기회입니다.")
-        
-        # 상세 보기 기능 (티커 선택 시 즉시 분석)
-        st.write("---")
-        st.subheader("🔍 종목 상세 분석 (순위권 내)")
-        selected_ticker = st.selectbox("분석하고 싶은 티커를 선택하세요:", ["선택하세요"] + list(df_res['티커']), key="rank_select")
-        
-        if selected_ticker != "선택하세요":
-            with st.spinner(f"{selected_ticker} 정밀 분석 중..."):
-                quant = WallStreetQuant(selected_ticker)
-                df = quant.get_realtime_data()
-                if df is not None:
-                    vix, spy_change = quant.monitor_macro_risk()
-                    curr_price = df['Close'].iloc[-1]
-                    prev_price = df['Close'].iloc[-2]
-                    rsi = df['RSI'].iloc[-1]
-                    ema20 = df['EMA20'].iloc[-1]
-                    ema60 = df['EMA60'].iloc[-1]
-                    
-                    decision, color, sentiment = get_decision(rsi, curr_price, ema20, ema60, prev_price, vix, spy_change)
-                    
-                    # 뉴스 로직 강화: 반드시 1개 이상 노출
-                    news = quant.analyze_news(sentiment)
-                    if not news:
-                        # 키워드 매칭 실패 시 최신 뉴스 강제 호출
-                        raw_news = quant.stock.news
-                        if raw_news:
-                            n = raw_news[0]
-                            content = n.get('content', n)
-                            news = [{
-                                'title': content.get('title', '최신 시장 동향'),
-                                'publisher': content.get('provider', {}).get('displayName', 'Market News'),
-                                'link': content.get('clickThroughUrl', {}).get('url', '#'),
-                                'key_sentence': content.get('summary', '뉴스를 분석 중입니다.'),
-                                'impact': 'AI 분석 중'
-                            }]
+        st.caption("※ 상위권 종목일수록 [저점 매수] 원칙에 부합하는 종목입니다.")
 
-                    st.markdown(f"""
-                        <div class='report-card'>
-                            <h4>{selected_ticker} 상세 보고서</h4>
-                            <h3>최종 결론: <span style='color:{color}'>{decision}</span></h3>
-                            <p>현재가: ${curr_price:,.2f} | RSI: {rsi:.2f}</p>
-                            <p><b>판단 근거:</b> {decision} 조건 충족 및 기술적 지표 정렬 확인됨.</p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    st.write("#### 📰 결론 증명 뉴스")
-                    for n in news:
-                        with st.expander(f"📰 {n['title']}", expanded=True):
-                            st.write(f"**출처:** {n['publisher']}")
-                            st.write(f"**핵심 내용:** {n['key_sentence']}")
-                            st.write(f"**국문 번역:** {quant.translate_text(n['key_sentence'])}")
-                            st.write(f"[원문 링크]({n['link']})")
+st.sidebar.markdown("### 🏛️ 수석 퀀트 투자 원칙")
+st.sidebar.error("1. 파산 위험 제로 우량주 한정")
+st.sidebar.error("2. 전재산 100% 매수/매도")
+st.sidebar.warning("3. 시스템 폭락 외 손절 금지")
+st.sidebar.info("4. 하락 멈춤 저점 매수")
+st.sidebar.info("5. 추세 이탈 익절")
 
-        st.caption("※ 순위표의 티커를 위 드롭다운에서 선택하면 즉시 상세 분석이 실행됩니다.")
-
-st.sidebar.markdown("### [투자 원칙 고수]")
-st.sidebar.info("1. 초대형 우량주만 취급\\n2. 100% 매수/매도 원칙\\n3. 시스템 폭락 시에만 손절")
+# 하단 리스크 모니터링
+v_v, s_v = WallStreetQuant("SPY").monitor_macro_risk()
+if v_v > 30:
+    st.error(f"🚨 시장 변동성 위험: VIX {v_v:.2f}")
+else:
+    st.success(f"✅ 시장 시스템 안정: VIX {v_v:.2f}")
