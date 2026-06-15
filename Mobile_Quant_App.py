@@ -324,4 +324,3 @@ with tab2:
 
 st.sidebar.markdown("### [투자 원칙 고수]")
 st.sidebar.info("1. 초대형 우량주만 취급\\n2. 100% 매수/매도 원칙\\n3. 시스템 폭락 시에만 손절")
-
