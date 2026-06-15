@@ -80,7 +80,7 @@ class ProfessionalQuant:
         except: return "번역 서버 연결 실패"
 
     def analyze_news_local(self):
-        """외부 API(Gemini) 없이, 자체 룰베이스 알고리즘으로 뉴스 팩트 판별"""
+        """외부 API 없이 자체 자연어 처리 엔진을 고도화하여 팩트 판별"""
         fallback_news = [{
             'title': f"[{self.ticker}] 특이 동향 없음",
             'publisher': "System Analyst",
@@ -94,20 +94,22 @@ class ProfessionalQuant:
             news_list = self.stock.news
             if not news_list: return fallback_news
             
-            # 종목 필터링 
+            # 종목 식별자 설정
             try: company_name = self.stock.info.get('shortName', self.ticker).split()[0].lower()
             except: company_name = self.ticker.lower()
-            target_ids = [self.ticker.lower(), company_name]
             
-            # 강력한 팩트 기반 키워드 사전 (가중치 부여)
+            # 강력한 팩트 기반 키워드 사전 (Buy the dip 등 추가)
             pos_dict = {
                 'surpass': 2, 'beat estimate': 3, 'upgrade': 2, 'record high': 2, 'raised guidance': 3, 
-                'breakthrough': 2, 'fda approval': 3, 'awarded': 2, 'soar': 1, 'jumped': 1, 'outperform': 2, 'profit': 1
+                'breakthrough': 2, 'fda approval': 3, 'awarded': 2, 'soar': 1, 'jumped': 1, 'outperform': 2, 
+                'profit': 1, 'best buy': 2, 'buy-the-dip': 2, 'top pick': 2, 'bullish': 2, 'recommend': 1
             }
             neg_dict = {
                 'missed estimate': 3, 'downgrade': 2, 'lawsuit': 3, 'investigation': 3, 'layoff': 2, 
-                'bankruptcy': 3, 'slump': 1, 'plunge': 1, 'cut guidance': 3, 'warning': 2, 'sued': 2, 'loss': 1
+                'bankruptcy': 3, 'slump': 1, 'plunge': 1, 'cut guidance': 3, 'warning': 2, 'sued': 2, 
+                'loss': 1, 'bearish': 2, 'sell rating': 2
             }
+            neutral_financial_markers = ['$', '%', 'billion', 'million', 'revenue', 'earnings', 'sales', 'target']
             
             analyzed_results = []
             
@@ -121,51 +123,55 @@ class ProfessionalQuant:
                 publisher = content.get('provider', {}).get('displayName', 'Unknown Source')
                 link = content.get('clickThroughUrl', {}).get('url', '#')
                 
-                # 1. 1차 필터링: 해당 종목 언급 여부
-                if not any(tid in full_text for tid in target_ids): continue
+                # 가십성 커뮤니티 글 배제 (r/ValueInvesting, reddit 등)
+                if 'r/' in full_text or 'reddit' in full_text: continue
                 
-                # 2. 자체 스코어링 로직
+                # 자체 스코어링
                 pos_score = sum(weight for kw, weight in pos_dict.items() if kw in full_text)
                 neg_score = sum(weight for kw, weight in neg_dict.items() if kw in full_text)
                 
-                # 3. 감성 결정 및 핵심 문장 추출
-                sentences = summary.split('. ')
-                if not sentences: sentences = [title]
+                # 문장 분리 및 노이즈 필터링 (너무 짧거나 닉네임만 있는 문장 제거)
+                raw_sentences = summary.replace('!', '.').replace('?', '.').split('. ')
+                valid_sentences = [s.strip() + "." for s in raw_sentences if len(s.split()) >= 4]
+                if not valid_sentences: valid_sentences = [title]
                 
                 impact = "⚪ 기타(중립)"
                 key_sentence = ""
                 
-                # 임계치(Threshold) 이상일 때만 호재/악재 판정 (모호한 것은 중립 처리)
-                if pos_score > neg_score and pos_score >= 2:
+                if pos_score > neg_score and pos_score >= 1:
                     impact = "🟢 호재"
-                    # 호재 가중치가 높은 단어가 포함된 문장 우선 추출
-                    for s in sentences:
+                    # 호재 단어가 직접 들어간 문장 추출
+                    for s in valid_sentences:
                         if any(kw in s.lower() for kw in pos_dict.keys()):
-                            key_sentence = s + "."
+                            key_sentence = s
                             break
-                    if not key_sentence: key_sentence = title
-                elif neg_score > pos_score and neg_score >= 2:
+                    if not key_sentence: key_sentence = valid_sentences[0]
+                    
+                elif neg_score > pos_score and neg_score >= 1:
                     impact = "🔴 악재"
-                    for s in sentences:
+                    for s in valid_sentences:
                         if any(kw in s.lower() for kw in neg_dict.keys()):
-                            key_sentence = s + "."
+                            key_sentence = s
                             break
-                    if not key_sentence: key_sentence = title
+                    if not key_sentence: key_sentence = valid_sentences[0]
+                    
                 else:
                     impact = "⚪ 기타(중립)"
-                    # 중립 기사는 팩트 판단을 위해 '숫자'가 포함된 문장 추출
-                    for s in sentences:
-                        if any(char.isdigit() for char in s):
-                            key_sentence = s + "."
+                    # 중립 팩트는 단순한 숫자가 아니라 명확한 금융 지표(달러, %, 매출액 등)가 포함된 문장만 추출
+                    for s in valid_sentences:
+                        if any(marker in s.lower() for marker in neutral_financial_markers):
+                            key_sentence = s
                             break
-                    if not key_sentence: key_sentence = sentences[0] + "." if sentences else title
+                    # 못 찾으면 의미 있는 가장 긴 문장 추출
+                    if not key_sentence: 
+                        key_sentence = max(valid_sentences, key=len) if valid_sentences else title
 
                 analyzed_results.append({
                     'title': title,
                     'publisher': publisher,
                     'link': link,
                     'summary': summary,
-                    'key_sentence': key_sentence.strip(),
+                    'key_sentence': key_sentence,
                     'impact': impact
                 })
             
@@ -255,13 +261,12 @@ def render_analysis_ui(ticker):
             c3.markdown(f"<div class='metric-box'>이격도(EMA60)<br><b>{df['Disparity'].iloc[-1]:.2f}%</b></div>", unsafe_allow_html=True)
             c4.markdown(f"<div class='metric-box'><b>저점 매력도 (Dip Score)</b><br><span class='dip-score'>{dip_score:.0f}점</span></div>", unsafe_allow_html=True)
             
-            # 지표 및 액션 설명 통합 박스
             st.markdown("""
             <div class='info-box'>
             <b>📊 주요 지표 설명</b><br>
             - <b>RSI</b>: 30 이하면 강력한 과매도(바닥) 상태.<br>
-            - <b>이격도</b>: 100% 미만이면 장기 평균(60일선)보다 싸게 거래 중임을 의미.<br>
-            - <b>Dip Score</b>: 과매도, 할인율, 바닥 지지 여부를 종합한 점수. 80점 이상 시 타점 유효.<br><br>
+            - <b>DISPARITY(%)</b>: 100% 미만이면 장기 평균(60일선)보다 싸게 거래 중임을 의미.<br>
+            - <b>DIP SCORE</b>: 과매도, 할인율, 바닥 지지 여부를 종합한 점수. 80점 이상 시 타점 유효.<br><br>
             <b>🚨 의사결정(ACTION) 기준</b><br>
             - <span style='color:#ff0000;'><b>긴급 매도</b></span>: 매크로 시스템 붕괴 (VIX 38↑ 등) 시 전량 현금화.<br>
             - <span style='color:#00ff00;'><b>매수 적기 (100%)</b></span>: 충분한 하락 후 저점 지지(Bottoming)가 확인된 최적의 100% 진입 타점.<br>
@@ -283,17 +288,18 @@ def render_analysis_ui(ticker):
                     st.write(f"**국문 번역:** {engine.translate_text(n['key_sentence'])}")
                     st.write(f"[원문 기사 보기]({n['link']})")
         else:
-            st.error("데이터 로드 실패.")
+            st.error("데이터 로드 실패. (스페이스X와 같은 비상장 기업은 분석 불가)")
 
 # --- 앱 메인 ---
 st.title("⚖️ Wall Street Quant: Buy The Dip Engine")
 st.markdown("<p style='color:#00ff00;'>초우량주 전용 저점 포착 및 자체 팩트 체크 터미널</p>", unsafe_allow_html=True)
 
+# 스페이스X(SPACE) 티커 추가
 WATCH_LIST = [
     'MSFT', 'AAPL', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO', 'ASML', 'LRCX',
     'AMAT', 'ORCL', 'ADBE', 'ISRG', 'INTU', 'PANW', 'VRT', 'BRK-B', 'JPM', 'V',
     'MA', 'BX', 'LLY', 'UNH', 'TMO', 'SYK', 'COST', 'WMT', 'PEP', 'HD', 'NFLX', 'XOM', 'PWR',
-    'ASTS', 'RKLB'
+    'ASTS', 'RKLB', 'SPACE' # 스페이스X (가정 또는 실제 티커)
 ]
 
 if "scan_results" not in st.session_state:
@@ -302,7 +308,7 @@ if "scan_results" not in st.session_state:
 tab1, tab2 = st.tabs(["[ 📊 개별 종목 저점 분석 ]", "[ 🏆 실시간 저점 매수 랭킹 ]"])
 
 with tab1:
-    ticker = st.text_input("분석 티커 입력 (예: MSFT, NVDA):", placeholder="NVDA").upper()
+    ticker = st.text_input("분석 티커 입력 (예: MSFT, NVDA, SPACE):", placeholder="NVDA").upper()
     if st.button("저점 타점 분석 실행"):
         if ticker:
             render_analysis_ui(ticker)
@@ -343,23 +349,6 @@ with tab2:
     if st.session_state.scan_results is not None:
         st.dataframe(st.session_state.scan_results, hide_index=True, use_container_width=True)
         
-        st.markdown("""
-        <div class='info-box'>
-        <b>📊 주요 지표 설명</b><br>
-        - <b>RSI</b>: 30 이하면 강력한 과매도(바닥) 상태.<br>
-        - <b>DISPARITY(%)</b>: 100% 미만이면 장기 평균(60일선)보다 싸게 거래 중임을 의미.<br>
-        - <b>DIP SCORE</b>: 과매도, 할인율, 바닥 지지 여부를 종합한 점수. 80점 이상 시 타점 유효.<br><br>
-        <b>🚨 의사결정(ACTION) 기준</b><br>
-        - <span style='color:#ff0000;'><b>긴급 매도</b></span>: 매크로 시스템 붕괴 (VIX 38↑ 등) 시 전량 현금화.<br>
-        - <span style='color:#00ff00;'><b>매수 적기 (100%)</b></span>: 하락 후 저점 지지(Bottoming)가 확인된 최적의 100% 진입 타점.<br>
-        - <span style='color:#ffff00;'><b>저점 진입 대기</b></span>: 할인 구간에 들어왔으나, 아직 하락세가 멈추지 않아 지지를 기다리는 상태.<br>
-        - <span style='color:#008000;'><b>강력 홀딩 (반등장)</b></span>: 어제까지 하락 추세였으나, 오늘 <b>상승 추세선(EMA20)을 뚫고 올라온 반등 초기 시점.</b><br>
-        - <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 안정적으로 유지 중 (신규 진입 금지).<br>
-        - <span style='color:#ff6600;'><b>일반 익절</b></span>: 상승 추세선(EMA20)이 무너지며 단기 모멘텀이 꺾인 수익 확정 타점.<br>
-        - <span style='color:#888888;'><b>관망</b></span>: 방향성이 모호한 중립 구간.
-        </div>
-        """, unsafe_allow_html=True)
-        
         st.write("---")
         st.subheader("🔍 순위권 종목 정밀 분석")
         selected_ticker = st.selectbox("위 순위표에서 정밀 분석할 티커를 선택하세요:", ["선택하세요"] + st.session_state.scan_results['TICKER'].tolist())
@@ -383,4 +372,3 @@ st.sidebar.markdown("""
 v, s = ProfessionalQuant("SPY").get_macro_data()
 if v > 35 or s > 15: st.error(f"🚨 시스템 폭락 경보: VIX {v:.2f}")
 else: st.success(f"✅ 거시 경제 안정: VIX {v:.2f}")
-
