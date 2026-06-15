@@ -6,6 +6,14 @@ from datetime import datetime
 import urllib.parse
 import requests
 import re
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+# NLTK VADER 사전 다운로드 (앱 실행 시 최초 1회 다운로드됨)
+try:
+    nltk.data.find('sentiment/vader_lexicon.zip')
+except LookupError:
+    nltk.download('vader_lexicon', quiet=True)
 
 # 페이지 설정
 st.set_page_config(page_title="Quant Engine: Buy The Dip", layout="wide", initial_sidebar_state="collapsed")
@@ -41,6 +49,16 @@ class ProfessionalQuant:
     def __init__(self, ticker):
         self.ticker = ticker.upper()
         self.stock = yf.Ticker(self.ticker)
+        self.sia = SentimentIntensityAnalyzer()
+        
+        # 금융 특화 단어 가중치 수동 조정 (VADER 사전 업데이트)
+        financial_lexicon = {
+            'surpass': 2.0, 'beat': 2.0, 'upgrade': 2.0, 'breakthrough': 2.5, 'soar': 2.0, 'jumped': 1.5,
+            'outperform': 2.0, 'buy-the-dip': 2.5, 'top pick': 2.0, 'bullish': 2.0, 'buy rating': 2.0,
+            'missed': -2.0, 'downgrade': -2.0, 'lawsuit': -2.5, 'investigation': -2.0, 'layoff': -1.5,
+            'bankruptcy': -3.0, 'slump': -1.5, 'plunge': -2.0, 'warning': -1.5, 'bearish': -2.0, 'sell rating': -2.0
+        }
+        self.sia.lexicon.update(financial_lexicon)
         
     def get_enriched_data(self):
         try:
@@ -80,13 +98,13 @@ class ProfessionalQuant:
         except: return "번역 서버 연결 실패"
 
     def analyze_news_local(self):
-        """외부 API 없이 자체 자연어 처리 엔진을 고도화하여 팩트 판별"""
+        """VADER NLP 엔진을 활용한 고도화된 뉴스 문맥 및 팩트 판별"""
         fallback_news = [{
             'title': f"[{self.ticker}] 특이 동향 없음",
             'publisher': "System Analyst",
             'link': "#",
             'summary': "펀더멘털을 훼손할 악재나 급격한 상승 모멘텀을 발생시킬 호재가 발견되지 않았습니다.",
-            'key_sentence': f"{self.ticker} maintains stable trend.",
+            'key_sentence': f"{self.ticker} maintains stable trend with no significant anomalies.",
             'impact': "⚪ 기타(중립)"
         }]
 
@@ -94,22 +112,10 @@ class ProfessionalQuant:
             news_list = self.stock.news
             if not news_list: return fallback_news
             
-            # 종목 식별자 설정
+            # 종목 필터링 
             try: company_name = self.stock.info.get('shortName', self.ticker).split()[0].lower()
             except: company_name = self.ticker.lower()
-            
-            # 강력한 팩트 기반 키워드 사전 (Buy the dip 등 추가)
-            pos_dict = {
-                'surpass': 2, 'beat estimate': 3, 'upgrade': 2, 'record high': 2, 'raised guidance': 3, 
-                'breakthrough': 2, 'fda approval': 3, 'awarded': 2, 'soar': 1, 'jumped': 1, 'outperform': 2, 
-                'profit': 1, 'best buy': 2, 'buy-the-dip': 2, 'top pick': 2, 'bullish': 2, 'recommend': 1
-            }
-            neg_dict = {
-                'missed estimate': 3, 'downgrade': 2, 'lawsuit': 3, 'investigation': 3, 'layoff': 2, 
-                'bankruptcy': 3, 'slump': 1, 'plunge': 1, 'cut guidance': 3, 'warning': 2, 'sued': 2, 
-                'loss': 1, 'bearish': 2, 'sell rating': 2
-            }
-            neutral_financial_markers = ['$', '%', 'billion', 'million', 'revenue', 'earnings', 'sales', 'target']
+            target_ids = [self.ticker.lower(), company_name]
             
             analyzed_results = []
             
@@ -123,56 +129,52 @@ class ProfessionalQuant:
                 publisher = content.get('provider', {}).get('displayName', 'Unknown Source')
                 link = content.get('clickThroughUrl', {}).get('url', '#')
                 
-                # 가십성 커뮤니티 글 배제 (r/ValueInvesting, reddit 등)
+                # 1. 가십성 필터링 및 종목 언급 여부 확인
                 if 'r/' in full_text or 'reddit' in full_text: continue
+                if not any(tid in full_text for tid in target_ids): continue
                 
-                # 자체 스코어링
-                pos_score = sum(weight for kw, weight in pos_dict.items() if kw in full_text)
-                neg_score = sum(weight for kw, weight in neg_dict.items() if kw in full_text)
+                # 2. VADER 문맥 분석 (Compound Score: -1.0 ~ 1.0)
+                # 제목과 요약본 전체의 문맥적 감성 점수를 계산
+                sentiment_score = self.sia.polarity_scores(title + ". " + summary)['compound']
                 
-                # 문장 분리 및 노이즈 필터링 (너무 짧거나 닉네임만 있는 문장 제거)
+                # 3. 감성 결정 (임계치 설정)
+                if sentiment_score >= 0.25:
+                    impact = "🟢 호재"
+                elif sentiment_score <= -0.25:
+                    impact = "🔴 악재"
+                else:
+                    impact = "⚪ 기타(중립)"
+                
+                # 4. 핵심 팩트 문장 추출
+                # 전체 문장을 분리한 뒤, 각 문장별로 VADER 점수를 매겨 가장 임팩트 있는 문장 도출
                 raw_sentences = summary.replace('!', '.').replace('?', '.').split('. ')
                 valid_sentences = [s.strip() + "." for s in raw_sentences if len(s.split()) >= 4]
                 if not valid_sentences: valid_sentences = [title]
                 
-                impact = "⚪ 기타(중립)"
                 key_sentence = ""
-                
-                if pos_score > neg_score and pos_score >= 1:
-                    impact = "🟢 호재"
-                    # 호재 단어가 직접 들어간 문장 추출
-                    for s in valid_sentences:
-                        if any(kw in s.lower() for kw in pos_dict.keys()):
-                            key_sentence = s
-                            break
-                    if not key_sentence: key_sentence = valid_sentences[0]
-                    
-                elif neg_score > pos_score and neg_score >= 1:
-                    impact = "🔴 악재"
-                    for s in valid_sentences:
-                        if any(kw in s.lower() for kw in neg_dict.keys()):
-                            key_sentence = s
-                            break
-                    if not key_sentence: key_sentence = valid_sentences[0]
-                    
+                if impact == "🟢 호재":
+                    # 긍정 점수가 가장 높은 문장 추출
+                    key_sentence = max(valid_sentences, key=lambda s: self.sia.polarity_scores(s)['compound'])
+                elif impact == "🔴 악재":
+                    # 부정 점수가 가장 낮은(음수) 문장 추출
+                    key_sentence = min(valid_sentences, key=lambda s: self.sia.polarity_scores(s)['compound'])
                 else:
-                    impact = "⚪ 기타(중립)"
-                    # 중립 팩트는 단순한 숫자가 아니라 명확한 금융 지표(달러, %, 매출액 등)가 포함된 문장만 추출
+                    # 중립일 경우 숫자(재무/실적 지표 등)가 포함된 문장을 우선 추출
                     for s in valid_sentences:
-                        if any(marker in s.lower() for marker in neutral_financial_markers):
+                        if any(char.isdigit() for char in s):
                             key_sentence = s
                             break
-                    # 못 찾으면 의미 있는 가장 긴 문장 추출
                     if not key_sentence: 
-                        key_sentence = max(valid_sentences, key=len) if valid_sentences else title
+                        key_sentence = max(valid_sentences, key=len)
 
                 analyzed_results.append({
                     'title': title,
                     'publisher': publisher,
                     'link': link,
                     'summary': summary,
-                    'key_sentence': key_sentence,
-                    'impact': impact
+                    'key_sentence': key_sentence.strip(),
+                    'impact': impact,
+                    'score': sentiment_score # 내부 로직 점수
                 })
             
             return analyzed_results if analyzed_results else fallback_news
@@ -237,7 +239,7 @@ def analyze_dip_signal(df, vix, spy_drop):
 
 # UI 렌더링
 def render_analysis_ui(ticker):
-    with st.spinner(f"'{ticker}' 기술적 지표 및 자체 엔진 뉴스 분석 중..."):
+    with st.spinner(f"'{ticker}' 기술적 지표 및 VADER NLP 뉴스 분석 중..."):
         engine = ProfessionalQuant(ticker)
         df = engine.get_enriched_data()
         if df is not None:
@@ -279,7 +281,7 @@ def render_analysis_ui(ticker):
             """, unsafe_allow_html=True)
 
             st.write("---")
-            st.write("#### 📰 팩트 체크 및 투심 분석 (Engine Ver.)")
+            st.write("#### 📰 팩트 체크 및 투심 분석 (VADER NLP Engine)")
             news = engine.analyze_news_local()
             for n in news:
                 with st.expander(f"[{n['impact']}] {n['title']}", expanded=True):
@@ -288,18 +290,17 @@ def render_analysis_ui(ticker):
                     st.write(f"**국문 번역:** {engine.translate_text(n['key_sentence'])}")
                     st.write(f"[원문 기사 보기]({n['link']})")
         else:
-            st.error("데이터 로드 실패. (스페이스X와 같은 비상장 기업은 분석 불가)")
+            st.error("데이터 로드 실패. (스페이스X와 같은 비상장 기업은 아직 데이터가 없을 수 있습니다.)")
 
 # --- 앱 메인 ---
 st.title("⚖️ Wall Street Quant: Buy The Dip Engine")
 st.markdown("<p style='color:#00ff00;'>초우량주 전용 저점 포착 및 자체 팩트 체크 터미널</p>", unsafe_allow_html=True)
 
-# 스페이스X(SPACE) 티커 추가
 WATCH_LIST = [
     'MSFT', 'AAPL', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO', 'ASML', 'LRCX',
     'AMAT', 'ORCL', 'ADBE', 'ISRG', 'INTU', 'PANW', 'VRT', 'BRK-B', 'JPM', 'V',
     'MA', 'BX', 'LLY', 'UNH', 'TMO', 'SYK', 'COST', 'WMT', 'PEP', 'HD', 'NFLX', 'XOM', 'PWR',
-    'ASTS', 'RKLB', 'SPACE' # 스페이스X (가정 또는 실제 티커)
+    'ASTS', 'RKLB', 'SPACE'
 ]
 
 if "scan_results" not in st.session_state:
