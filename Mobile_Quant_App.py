@@ -32,6 +32,10 @@ st.markdown("""
         border-radius: 4px;
     }
     .dip-score { font-size: 2em; font-weight: bold; color: #00ff00; }
+    .info-box {
+        font-size: 0.85em; color: #888; margin-top: 15px; padding: 15px; 
+        border: 1px dashed #333; background-color: #0a0a0a;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -68,7 +72,6 @@ class ProfessionalQuant:
         except: return 0, 0
 
     def analyze_news_with_ai(self, api_key):
-        """Gemini AI를 활용하여 문맥 기반 호재/악재 분류 및 핵심 팩트 문장 추출"""
         fallback_news = [{
             'title': f"[{self.ticker}] 최근 주요 변동 사항 없음",
             'publisher': "System Analyst",
@@ -82,7 +85,6 @@ class ProfessionalQuant:
             news_list = self.stock.news
             if not news_list: return fallback_news
             
-            # 종목 필터링 
             try: company_name = self.stock.info.get('shortName', self.ticker).split()[0].lower()
             except: company_name = self.ticker.lower()
             target_ids = [self.ticker.lower(), company_name]
@@ -94,17 +96,14 @@ class ProfessionalQuant:
                 summary = n.get('content', n).get('summary', '')
                 full_text = (title + " " + summary).lower()
                 
-                # 티커나 기업명이 포함된 뉴스만 1차 통과
                 if any(tid in full_text for tid in target_ids):
                     filtered_news.append(n)
             
             if not filtered_news: return fallback_news
 
             if not api_key:
-                # API 키가 없으면 그냥 원래대로 추출
                 return self._basic_news_extract(filtered_news)
 
-            # AI 분석 시작
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel('gemini-1.5-flash')
             
@@ -126,7 +125,7 @@ class ProfessionalQuant:
                 
                 [요청 사항]
                 1. impact: 이 뉴스가 주가에 미치는 영향을 문맥을 파악하여 결정하세요. 무조건 다음 세 가지 중 하나만 선택하세요: "🟢 호재", "🔴 악재", "⚪ 기타(중립)"
-                2. key_sentence: 이 뉴스가 호재, 악재, 혹은 중립인 이유를 명확하게 팩트 기반으로 증명할 수 있는 '핵심 문장 1개(한국어 번역)'를 작성하세요. 쓸데없는 배경 설명 없이, 구체적인 수치나 결정적인 이유(예: 실적 달성 실패, 파트너십 체결 등)를 포함해야 합니다.
+                2. key_sentence: 이 뉴스가 호재, 악재, 혹은 중립인 이유를 명확하게 팩트 기반으로 증명할 수 있는 '핵심 문장 1개(한국어 번역)'를 작성하세요. 쓸데없는 배경 설명 없이, 구체적인 수치나 결정적인 이유를 포함해야 합니다.
                 
                 [응답 형식 (JSON만 출력)]
                 {{"impact": "선택된감성", "key_sentence": "핵심팩트문장"}}
@@ -232,7 +231,7 @@ def analyze_dip_signal(df, vix, spy_drop):
 
     return decision, color, reasons, dip_score
 
-# UI 렌더링
+# 공통 분석 렌더링 함수
 def render_analysis_ui(ticker, api_key):
     with st.spinner(f"'{ticker}' 기술적 지표 및 AI 뉴스 분석 중..."):
         engine = ProfessionalQuant(ticker)
@@ -258,6 +257,23 @@ def render_analysis_ui(ticker, api_key):
             c3.markdown(f"<div class='metric-box'>이격도(EMA60)<br><b>{df['Disparity'].iloc[-1]:.2f}%</b></div>", unsafe_allow_html=True)
             c4.markdown(f"<div class='metric-box'><b>저점 매력도 (Dip Score)</b><br><span class='dip-score'>{dip_score:.0f}점</span></div>", unsafe_allow_html=True)
             
+            # 지표 및 액션 설명 통합 박스
+            st.markdown("""
+            <div class='info-box'>
+            <b>📊 주요 지표 설명</b><br>
+            - <b>RSI</b>: 30 이하면 강력한 과매도(바닥) 상태.<br>
+            - <b>이격도</b>: 100% 미만이면 장기 평균(60일선)보다 싸게 거래 중임을 의미.<br>
+            - <b>Dip Score</b>: 과매도, 할인율, 바닥 지지 여부를 종합한 점수. 80점 이상 시 타점 유효.<br><br>
+            <b>🚨 의사결정(ACTION) 기준</b><br>
+            - <span style='color:#ff0000;'><b>긴급 매도</b></span>: 매크로 시스템 붕괴 (VIX 38↑ 등) 시 전량 현금화.<br>
+            - <span style='color:#00ff00;'><b>매수 적기 (100%)</b></span>: 충분한 하락 후 저점 지지(Bottoming)가 확인된 최적의 100% 진입 타점.<br>
+            - <span style='color:#ffff00;'><b>저점 진입 대기</b></span>: 주가가 할인 구간에 들어왔으나, 아직 하락세가 완전히 멈추지 않아 지지를 기다리는 상태.<br>
+            - <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 유지 중인 상태 (신규 진입 금지, 보유자 영역).<br>
+            - <span style='color:#ff6600;'><b>일반 익절</b></span>: 상승 추세선(EMA20)이 무너지며 단기 모멘텀이 꺾인 수익 확정 타점.<br>
+            - <span style='color:#888888;'><b>관망</b></span>: 방향성이 모호한 중립 구간.
+            </div>
+            """, unsafe_allow_html=True)
+
             st.write("---")
             st.write("#### 📰 AI 팩트 체크 및 투심 분석")
             news = engine.analyze_news_with_ai(api_key)
@@ -329,6 +345,22 @@ with tab2:
 
     if st.session_state.scan_results is not None:
         st.dataframe(st.session_state.scan_results, hide_index=True, use_container_width=True)
+        
+        st.markdown("""
+        <div class='info-box'>
+        <b>📊 주요 지표 설명</b><br>
+        - <b>RSI</b>: 30 이하면 강력한 과매도(바닥) 상태.<br>
+        - <b>DISPARITY(%)</b>: 100% 미만이면 장기 평균(60일선)보다 싸게 거래 중임을 의미.<br>
+        - <b>DIP SCORE</b>: 과매도, 할인율, 바닥 지지 여부를 종합한 점수. 80점 이상 시 타점 유효.<br><br>
+        <b>🚨 의사결정(ACTION) 기준</b><br>
+        - <span style='color:#ff0000;'><b>긴급 매도</b></span>: 매크로 시스템 붕괴 (VIX 38↑ 등) 시 전량 현금화.<br>
+        - <span style='color:#00ff00;'><b>매수 적기 (100%)</b></span>: 하락 후 저점 지지(Bottoming)가 확인된 최적의 100% 진입 타점.<br>
+        - <span style='color:#ffff00;'><b>저점 진입 대기</b></span>: 할인 구간에 들어왔으나, 아직 하락세가 멈추지 않아 지지를 기다리는 상태.<br>
+        - <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 유지 중 (신규 진입 금지).<br>
+        - <span style='color:#ff6600;'><b>일반 익절</b></span>: 상승 추세선(EMA20)이 무너지며 단기 모멘텀이 꺾인 수익 확정 타점.<br>
+        - <span style='color:#888888;'><b>관망</b></span>: 방향성이 모호한 중립 구간.
+        </div>
+        """, unsafe_allow_html=True)
         
         st.write("---")
         st.subheader("🔍 순위권 종목 정밀 분석")
