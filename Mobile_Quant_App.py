@@ -7,26 +7,28 @@ import urllib.parse
 import requests
 
 # 페이지 설정
-st.set_page_config(page_title="Wall Street Quant Engine 3.0", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Quant Engine: Buy The Dip", layout="wide", initial_sidebar_state="collapsed")
 
-# 냉혹한 전문가 스타일링
+# 월스트리트 퀀트 터미널 스타일링
 st.markdown("""
     <style>
     .main { background-color: #050505; color: #e0e0e0; }
     .stButton>button { 
-        width: 100%; border-radius: 2px; height: 3.5em; 
-        background-color: #000; color: #d4af37; font-weight: bold; 
-        border: 1px solid #d4af37; transition: 0.3s;
+        width: 100%; border-radius: 0px; height: 3.5em; 
+        background-color: #111; color: #00ff00; font-weight: bold; 
+        border: 1px solid #00ff00; transition: 0.3s;
     }
-    .stButton>button:hover { background-color: #d4af37; color: black; }
+    .stButton>button:hover { background-color: #00ff00; color: black; }
     .report-card { 
-        background-color: #000; padding: 25px; border-radius: 4px; 
-        border: 1px solid #333; border-left: 12px solid #d4af37; 
+        background-color: #0a0a0a; padding: 25px; border-radius: 0px; 
+        border: 1px solid #222; border-left: 8px solid #00ff00; 
         margin-bottom: 25px; font-family: 'Consolas', monospace;
     }
     .metric-box {
-        background-color: #111; padding: 10px; border: 1px solid #222; text-align: center;
+        background-color: #000; padding: 15px; border: 1px solid #333; text-align: center;
+        border-radius: 4px;
     }
+    .dip-score { font-size: 2em; font-weight: bold; color: #00ff00; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -38,30 +40,18 @@ class ProfessionalQuant:
     def get_enriched_data(self):
         try:
             df = self.stock.history(period="1y", interval="1d")
-            if df.empty or len(df) < 30: return None
+            if df.empty or len(df) < 60: return None
             
-            # 1. RSI (과매도 지표)
+            # RSI 계산
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             df['RSI'] = 100 - (100 / (1 + (gain / loss)))
             
-            # 2. 이동평균선 및 이격도 (평균 회귀 지표)
+            # 이동평균 및 이격도 (EMA60 기준)
             df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
             df['EMA60'] = df['Close'].ewm(span=60, adjust=False).mean()
-            df['Disparity'] = (df['Close'] / df['EMA60']) * 100
-            
-            # 3. ATR (변동성 지표)
-            high_low = df['High'] - df['Low']
-            high_close = np.abs(df['High'] - df['Close'].shift())
-            low_close = np.abs(df['Low'] - df['Close'].shift())
-            ranges = pd.concat([high_low, high_close, low_close], axis=1)
-            true_range = np.max(ranges, axis=1)
-            df['ATR'] = true_range.rolling(14).mean()
-            
-            # 4. 거래량 이동평균 (거래량 스파이크 확인용)
-            df['Vol_MA'] = df['Volume'].rolling(window=20).mean()
-            df['Vol_Ratio'] = df['Volume'] / df['Vol_MA']
+            df['Disparity'] = (df['Close'] / df['EMA60']) * 100 # 100 미만이면 60일선 아래 (저점 구간)
             
             return df
         except: return None
@@ -74,59 +64,76 @@ class ProfessionalQuant:
             return vix, spy_drop
         except: return 0, 0
 
-# 의사결정 알고리즘 3.0
-def analyze_signal(df, vix, spy_drop):
+# 저점 매수(Buy the Dip) 특화 의사결정 알고리즘
+def analyze_dip_signal(df, vix, spy_drop):
     curr = df.iloc[-1]
     prev = df.iloc[-2]
     
-    score = 50 # 기본값
+    rsi = curr['RSI']
+    disparity = curr['Disparity']
+    price = curr['Close']
+    ema20 = curr['EMA20']
+    
+    # 1. 저점 매수 매력도 (Dip Score) 계산 (100점 만점)
+    # 우량주는 언젠가 오른다는 전제하에, "얼마나 싸게, 안전하게 살 수 있는가?"를 수치화
+    
+    # RSI 점수 (RSI가 45 이하일 때부터 점수 부여, 낮을수록 고득점)
+    rsi_score = max(0, (45 - rsi) * 2.5) 
+    
+    # 이격도 점수 (EMA60선 아래로 떨어질수록 고득점, 즉 100% 미만일 때)
+    disp_score = max(0, (100 - disparity) * 3) 
+    
+    # 바닥 확인 가점 (떨어지는 칼날 피하기)
+    recent_min = df['Low'].iloc[-5:].min()
+    is_bottoming = price >= recent_min * 1.015 # 최근 5일 최저점 대비 1.5% 이상 반등했는가?
+    bottom_bonus = 20 if is_bottoming else -20 # 아직 하락 중이면 감점
+    
+    # 총점 계산
+    dip_score = min(100, max(0, rsi_score + disp_score + bottom_bonus))
+    
+    # 2. 상태(Action) 결정
     decision = "관망"
     color = "#888888"
     reasons = []
 
-    # 1단계: 매크로 리스크 필터 (최우선)
     if vix > 38 or spy_drop > 15:
-        return "긴급 매도", "#ff0000", ["시스템적 대폭락(Mega-crash) 포착.", f"VIX 지수 {vix:.2f} 위험 수준.", "자산 전량 보호 원칙 가동."], 0
-
-    # 2단계: 매수 적기 포착 (데이터 확증 로직)
-    # 조건: RSI 과매도 + 이격도 하단 + 거래량 동반 반등 혹은 하락 멈춤
-    is_oversold = curr['RSI'] < 33
-    is_stretched = curr['Disparity'] < 95
-    is_volume_confirm = curr['Vol_Ratio'] > 1.2 # 평소보다 거래량 20% 이상 증가
-    is_bottoming = curr['Close'] >= df['Low'].iloc[-3:].min()
-    
-    if is_oversold and is_stretched and is_bottoming:
-        decision = "매수 적기 (전재산 100%)"
-        color = "#00ff00"
-        score = 90 + (33 - curr['RSI'])
+        decision, color = "긴급 매도", "#ff0000"
+        dip_score = 0
+        reasons = ["시스템 대폭락 감지. 저점 매수 원칙 일시 중단 및 현금화."]
+    elif dip_score >= 80 and is_bottoming:
+        decision, color = "매수 적기 (100%)", "#00ff00"
         reasons = [
-            f"기술적 과매도 극치 (RSI {curr['RSI']:.2f}) 확인.",
-            f"EMA60 대비 이격도 {curr['Disparity']:.2f}%로 평균 회귀 가능성 매우 높음.",
-            "하락세 멈춤 및 거래량 수반 데이터로 저점 신뢰도 확보."
+            f"RSI {rsi:.1f}의 극심한 과매도 상태.",
+            f"장기 이평선(EMA60) 대비 {100-disparity:.1f}% 할인된 가격 (이격도 {disparity:.1f}%).",
+            "하락세가 멈추고 저점 지지(Bottoming)가 확인된 최적의 진입 타점."
         ]
-    # 3단계: 강력 홀딩 (추세 추종)
-    elif curr['Close'] > curr['EMA20']:
-        decision = "강력 홀딩"
-        color = "#008000"
-        score = 60 + (curr['RSI'] / 5)
-        reasons = ["상승 추세(EMA20 상단) 견고하게 유지 중.", "일상적 변동성 구역으로 매도 불필요.", "우상향 원칙에 따른 포지션 고수."]
-    # 4단계: 익절 목표 (추세 이탈)
-    elif curr['Close'] < curr['EMA20'] and prev['Close'] >= prev['EMA20']:
-        decision = "일반 익절"
-        color = "#ffff00"
-        score = 10
-        reasons = ["기술적 상승 추세 이탈(EMA20 하향 돌파).", "단기 모멘텀 상실 및 하락 전환 징후.", "수익 확정 및 현금화 전략."]
+    elif dip_score >= 50:
+        decision, color = "저점 진입 대기", "#ffff00"
+        reasons = [
+            f"주가가 할인 구간에 진입함 (Dip Score: {dip_score:.1f}점).",
+            "완벽한 바닥 지지가 확인될 때까지 100% 매수 대기."
+        ]
+    elif price > ema20 and prev['Close'] < prev['EMA20']:
+        decision, color = "강력 홀딩 (반등장)", "#008000"
+        dip_score = 30 # 이미 올랐으므로 신규 매수 점수는 낮음
+        reasons = ["저점을 다지고 단기 추세선(EMA20)을 돌파함.", "보유자 영역. 수익 극대화."]
+    elif price > ema20:
+        decision, color = "강력 홀딩", "#008000"
+        dip_score = 10 # 고점 영역
+        reasons = ["우상향 추세 진행 중.", "신규 '저점 매수' 타점은 이미 지나감."]
+    elif price < ema20 and prev['Close'] >= prev['EMA20']:
+        decision, color = "일반 익절", "#ff6600"
+        dip_score = 0
+        reasons = ["단기 상승 추세(EMA20) 이탈.", "추세 꺾임에 따른 수익 확정 권고."]
     else:
-        decision = "관망"
-        color = "#888888"
-        score = 30
-        reasons = ["데이터가 유의미한 변곡점을 형성하지 않음.", "확률적 우위가 없는 구간.", "데이터 대기."]
+        decision, color = "관망", "#888888"
+        reasons = ["현재가와 지표가 애매한 중간 지대에 위치함."]
 
-    return decision, color, reasons, score
+    return decision, color, reasons, dip_score
 
 # --- 앱 인터페이스 ---
-st.title("🏛️ Wall Street Senior Quant Engine 3.0")
-st.markdown("<p style='color:#d4af37;'>PRO-GRADE ELITE DATA ANALYSIS SYSTEM</p>", unsafe_allow_html=True)
+st.title("⚖️ Wall Street Quant: Buy The Dip Engine")
+st.markdown("<p style='color:#00ff00;'>초우량주 전용 저점 포착 및 대폭락 감시 터미널</p>", unsafe_allow_html=True)
 
 WATCH_LIST = [
     'MSFT', 'AAPL', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO', 'ASML', 'LRCX',
@@ -135,23 +142,24 @@ WATCH_LIST = [
     'ASTS', 'RKLB'
 ]
 
-tab1, tab2 = st.tabs(["[ 📊 DEEP ANALYSIS ]", "[ 🏆 RANKING SCAN ]"])
+tab1, tab2 = st.tabs(["[ 📊 개별 종목 저점 분석 ]", "[ 🏆 실시간 저점 매수 랭킹 ]"])
 
 with tab1:
-    ticker = st.text_input("ENTER TICKER (PRO-LIST ONLY):", placeholder="NVDA").upper()
-    if st.button("EXECUTE FACT ANALYSIS"):
+    ticker = st.text_input("분석 티커 입력 (예: MSFT, NVDA):", placeholder="NVDA").upper()
+    if st.button("저점 타점 분석 실행"):
         if ticker:
-            with st.spinner(f"EXTRACTING {ticker} RAW DATA..."):
+            with st.spinner("데이터 추출 및 Dip Score 계산 중..."):
                 engine = ProfessionalQuant(ticker)
                 df = engine.get_enriched_data()
                 if df is not None:
                     vix, spy_drop = engine.get_macro_data()
-                    decision, color, reasons, _ = analyze_signal(df, vix, spy_drop)
+                    decision, color, reasons, dip_score = analyze_dip_signal(df, vix, spy_drop)
                     
                     st.markdown(f"""
-                        <div class='report-card'>
-                            <h1 style='color:{color}; margin-bottom:10px;'>{decision}</h1>
-                            <p style='font-size:1.2em;'><b>FACTUAL RATIONALE:</b></p>
+                        <div class='report-card' style='border-left-color:{color};'>
+                            <h1 style='color:{color}; margin-bottom:0px;'>{decision}</h1>
+                            <p style='color:gray; font-size:0.9em;'>※ 100% 매매 원칙에 의거한 결론입니다.</p>
+                            <p style='font-size:1.1em; margin-top:20px;'><b>[팩트 기반 근거]:</b></p>
                             <ul>
                                 {"".join(f"<li>{r}</li>" for r in reasons)}
                             </ul>
@@ -159,20 +167,27 @@ with tab1:
                     """, unsafe_allow_html=True)
                     
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.markdown(f"<div class='metric-box'>PRICE<br><b>${df['Close'].iloc[-1]:,.2f}</b></div>", unsafe_allow_html=True)
+                    c1.markdown(f"<div class='metric-box'>현재가<br><b>${df['Close'].iloc[-1]:,.2f}</b></div>", unsafe_allow_html=True)
                     c2.markdown(f"<div class='metric-box'>RSI<br><b>{df['RSI'].iloc[-1]:.2f}</b></div>", unsafe_allow_html=True)
-                    c3.markdown(f"<div class='metric-box'>DISPARITY<br><b>{df['Disparity'].iloc[-1]:.2f}%</b></div>", unsafe_allow_html=True)
-                    c4.markdown(f"<div class='metric-box'>VOL RATIO<br><b>{df['Vol_Ratio'].iloc[-1]:.2f}x</b></div>", unsafe_allow_html=True)
+                    c3.markdown(f"<div class='metric-box'>이격도(EMA60)<br><b>{df['Disparity'].iloc[-1]:.2f}%</b></div>", unsafe_allow_html=True)
+                    c4.markdown(f"<div class='metric-box'><b>저점 매력도 (Dip Score)</b><br><span class='dip-score'>{dip_score:.0f}점</span></div>", unsafe_allow_html=True)
                     
                     st.write("---")
-                    st.write("#### 📰 FUNDAMENTAL PROOF (REAL-TIME NEWS)")
-                    for n in engine.stock.news[:3]:
-                        with st.expander(f"📰 {n['title']}"):
-                            st.write(f"Source: {n['provider']} | [LINK]({n['link']})")
-                            st.write(f"Summary: {n['summary']}")
+                    st.write("#### 📰 뉴스 팩트 체크")
+                    try:
+                        for n in engine.stock.news[:3]:
+                            with st.expander(f"📰 {n.get('content', n).get('title', '제목 없음')}"):
+                                st.write(n.get('content', n).get('summary', '요약 없음'))
+                                st.write(f"[원문 링크]({n.get('content', n).get('clickThroughUrl', {}).get('url', '#')})")
+                    except: st.write("뉴스 데이터를 불러오지 못했습니다.")
+                else:
+                    st.error("데이터 로드 실패.")
 
 with tab2:
-    if st.button("RUN ELITE 35+ SCANNER"):
+    st.markdown("### 🏆 가장 싸게 살 수 있는 초우량주 순위 (Dip Score 기준)")
+    st.write("모든 초우량주(비전 및 장기 우상향이 검증된 종목) 중 현재 가장 깊은 조정(Dip)을 받고 바닥을 다지는 종목을 찾습니다.")
+    
+    if st.button("전체 종목 저점 스캔 실행"):
         results = []
         vix, spy_drop = ProfessionalQuant("SPY").get_macro_data()
         progress = st.progress(0)
@@ -183,34 +198,40 @@ with tab2:
                 e = ProfessionalQuant(t)
                 d = e.get_enriched_data()
                 if d is None: continue
-                dec, col, _, score = analyze_signal(d, vix, spy_drop)
+                dec, col, _, score = analyze_dip_signal(d, vix, spy_drop)
                 results.append({
                     'TICKER': t,
                     'PRICE': f"${d['Close'].iloc[-1]:.2f}",
                     'RSI': d['RSI'].iloc[-1],
-                    'DISPARITY': f"{d['Disparity'].iloc[-1]:.1f}%",
-                    'DECISION': dec,
-                    'SCORE': score
+                    'DISPARITY(%)': d['Disparity'].iloc[-1],
+                    'ACTION': dec,
+                    'DIP SCORE': score
                 })
             except: continue
             
-        df_rank = pd.DataFrame(results).sort_values(by='SCORE', ascending=False).drop(columns=['SCORE'])
+        # Dip Score 기준으로 내림차순 정렬 (높을수록 저점 매수에 적합)
+        df_rank = pd.DataFrame(results).sort_values(by='DIP SCORE', ascending=False)
+        df_rank['DISPARITY(%)'] = df_rank['DISPARITY(%)'].apply(lambda x: f"{x:.1f}%")
+        df_rank['RSI'] = df_rank['RSI'].apply(lambda x: f"{x:.1f}")
+        df_rank['DIP SCORE'] = df_rank['DIP SCORE'].apply(lambda x: f"{x:.1f}점")
         df_rank.insert(0, 'RANK', range(1, len(df_rank) + 1))
-        st.write("### 🏆 SENIOR QUANT RECOMMENDED RANKING")
+        
         st.dataframe(df_rank, hide_index=True, use_container_width=True)
-        st.caption("※ 본 순위는 [평균 회귀] 및 [저점 확증] 데이터가 가장 강력한 순서대로 정렬됩니다.")
+        st.caption("※ 이격도가 100% 미만이고 RSI가 낮을수록 점수가 높습니다. '매수 적기' 시그널이 뜬 상위 종목에 전재산 100% 진입을 고려하십시오.")
 
 st.sidebar.title("🏛️ INVEST PRINCIPLES")
 st.sidebar.markdown("""
-- **TARGET**: MEGA-CAP BLUE CHIP
-- **CAPITAL**: 100% BUY/SELL
-- **STOP LOSS**: MEGA-CRASH ONLY
-- **BUY**: BOTTOMING CONFIRMED
-- **SELL**: TREND BREAK
+**[목적]**
+비전이 훌륭하여 장기 우상향이 확실한 초대형 우량주의 **최적의 저점 매수(Buy the Dip)** 타이밍을 포착.
+
+**[운칙]**
+- **자금**: 무조건 전재산 100% 매수/매도
+- **손절**: 대폭락(Mega-crash) 외 절대 금지
+- **매수**: 하락 멈춤 및 저점 지지 확인 시
+- **익절**: 기술적 상승 추세 꺾임 시
 """)
 
 # 상시 감시 바
 v, s = ProfessionalQuant("SPY").get_macro_data()
-if v > 30: st.error(f"🚨 SYSTEMIC RISK ALERT: VIX {v:.2f}")
-else: st.success(f"✅ SYSTEM STABLE: VIX {v:.2f}")
-
+if v > 35 or s > 15: st.error(f"🚨 시스템 폭락 경보: VIX {v:.2f}")
+else: st.success(f"✅ 거시 경제 안정: VIX {v:.2f}")
