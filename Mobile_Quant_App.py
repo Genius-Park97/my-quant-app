@@ -342,4 +342,3 @@ st.write("---")
 v, s = ProfessionalQuant("SPY").get_macro_data()
 if v > 35 or s > 15: st.error(f"🚨 시스템 폭락 경보: VIX {v:.2f}")
 else: st.success(f"✅ 거시 경제 안정: VIX {v:.2f}")
-
