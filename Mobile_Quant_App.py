@@ -5,8 +5,6 @@ import numpy as np
 from datetime import datetime
 import urllib.parse
 import requests
-import google.generativeai as genai
-import json
 import re
 
 # 페이지 설정
@@ -71,13 +69,24 @@ class ProfessionalQuant:
             return vix, spy_drop
         except: return 0, 0
 
-    def analyze_news_with_ai(self, api_key):
+    def translate_text(self, text):
+        try:
+            url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text[:400])}&langpair=en|ko"
+            response = requests.get(url, timeout=5)
+            data = response.json()
+            if data.get('responseStatus') == 200:
+                return data.get('responseData').get('translatedText')
+            return "번역 한도 초과 또는 일시적 오류"
+        except: return "번역 서버 연결 실패"
+
+    def analyze_news_local(self):
+        """외부 API(Gemini) 없이, 자체 룰베이스 알고리즘으로 뉴스 팩트 판별"""
         fallback_news = [{
-            'title': f"[{self.ticker}] 최근 주요 변동 사항 없음",
+            'title': f"[{self.ticker}] 특이 동향 없음",
             'publisher': "System Analyst",
             'link': "#",
-            'summary': "데이터를 가져올 수 없거나 펀더멘털을 훼손할 악재가 없습니다.",
-            'key_sentence': "안정적인 상태가 유지되고 있습니다.",
+            'summary': "펀더멘털을 훼손할 악재나 급격한 상승 모멘텀을 발생시킬 호재가 발견되지 않았습니다.",
+            'key_sentence': f"{self.ticker} maintains stable trend.",
             'impact': "⚪ 기타(중립)"
         }]
 
@@ -85,96 +94,85 @@ class ProfessionalQuant:
             news_list = self.stock.news
             if not news_list: return fallback_news
             
+            # 종목 필터링 
             try: company_name = self.stock.info.get('shortName', self.ticker).split()[0].lower()
             except: company_name = self.ticker.lower()
             target_ids = [self.ticker.lower(), company_name]
             
-            filtered_news = []
-            for n in news_list:
-                if len(filtered_news) >= 3: break
-                title = n.get('content', n).get('title', '')
-                summary = n.get('content', n).get('summary', '')
-                full_text = (title + " " + summary).lower()
-                
-                if any(tid in full_text for tid in target_ids):
-                    filtered_news.append(n)
-            
-            if not filtered_news: return fallback_news
-
-            if not api_key:
-                return self._basic_news_extract(filtered_news)
-
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            # 강력한 팩트 기반 키워드 사전 (가중치 부여)
+            pos_dict = {
+                'surpass': 2, 'beat estimate': 3, 'upgrade': 2, 'record high': 2, 'raised guidance': 3, 
+                'breakthrough': 2, 'fda approval': 3, 'awarded': 2, 'soar': 1, 'jumped': 1, 'outperform': 2, 'profit': 1
+            }
+            neg_dict = {
+                'missed estimate': 3, 'downgrade': 2, 'lawsuit': 3, 'investigation': 3, 'layoff': 2, 
+                'bankruptcy': 3, 'slump': 1, 'plunge': 1, 'cut guidance': 3, 'warning': 2, 'sued': 2, 'loss': 1
+            }
             
             analyzed_results = []
-            for n in filtered_news:
+            
+            for n in news_list:
+                if len(analyzed_results) >= 3: break
+                
                 content = n.get('content', n)
                 title = content.get('title', '')
                 summary = content.get('summary', '')
+                full_text = (title + " " + summary).lower()
                 publisher = content.get('provider', {}).get('displayName', 'Unknown Source')
                 link = content.get('clickThroughUrl', {}).get('url', '#')
                 
-                prompt = f"""
-                다음은 주식 '{self.ticker}'에 관한 뉴스입니다. 
-                이 뉴스를 분석하여 다음의 JSON 포맷으로 답해주세요.
+                # 1. 1차 필터링: 해당 종목 언급 여부
+                if not any(tid in full_text for tid in target_ids): continue
                 
-                [뉴스]
-                제목: {title}
-                요약: {summary}
+                # 2. 자체 스코어링 로직
+                pos_score = sum(weight for kw, weight in pos_dict.items() if kw in full_text)
+                neg_score = sum(weight for kw, weight in neg_dict.items() if kw in full_text)
                 
-                [요청 사항]
-                1. impact: 이 뉴스가 주가에 미치는 영향을 문맥을 파악하여 결정하세요. 무조건 다음 세 가지 중 하나만 선택하세요: "🟢 호재", "🔴 악재", "⚪ 기타(중립)"
-                2. key_sentence: 이 뉴스가 호재, 악재, 혹은 중립인 이유를 명확하게 팩트 기반으로 증명할 수 있는 '핵심 문장 1개(한국어 번역)'를 작성하세요. 쓸데없는 배경 설명 없이, 구체적인 수치나 결정적인 이유를 포함해야 합니다.
+                # 3. 감성 결정 및 핵심 문장 추출
+                sentences = summary.split('. ')
+                if not sentences: sentences = [title]
                 
-                [응답 형식 (JSON만 출력)]
-                {{"impact": "선택된감성", "key_sentence": "핵심팩트문장"}}
-                """
+                impact = "⚪ 기타(중립)"
+                key_sentence = ""
                 
-                try:
-                    res = model.generate_content(prompt)
-                    match = re.search(r'\{.*\}', res.text, re.DOTALL)
-                    if match:
-                        ai_data = json.loads(match.group())
-                        analyzed_results.append({
-                            'title': title,
-                            'publisher': publisher,
-                            'link': link,
-                            'key_sentence': ai_data.get('key_sentence', '분석 실패'),
-                            'impact': ai_data.get('impact', '⚪ 기타(중립)')
-                        })
-                    else:
-                        analyzed_results.append(self._fallback_single_news(n))
-                except:
-                    analyzed_results.append(self._fallback_single_news(n))
+                # 임계치(Threshold) 이상일 때만 호재/악재 판정 (모호한 것은 중립 처리)
+                if pos_score > neg_score and pos_score >= 2:
+                    impact = "🟢 호재"
+                    # 호재 가중치가 높은 단어가 포함된 문장 우선 추출
+                    for s in sentences:
+                        if any(kw in s.lower() for kw in pos_dict.keys()):
+                            key_sentence = s + "."
+                            break
+                    if not key_sentence: key_sentence = title
+                elif neg_score > pos_score and neg_score >= 2:
+                    impact = "🔴 악재"
+                    for s in sentences:
+                        if any(kw in s.lower() for kw in neg_dict.keys()):
+                            key_sentence = s + "."
+                            break
+                    if not key_sentence: key_sentence = title
+                else:
+                    impact = "⚪ 기타(중립)"
+                    # 중립 기사는 팩트 판단을 위해 '숫자'가 포함된 문장 추출
+                    for s in sentences:
+                        if any(char.isdigit() for char in s):
+                            key_sentence = s + "."
+                            break
+                    if not key_sentence: key_sentence = sentences[0] + "." if sentences else title
+
+                analyzed_results.append({
+                    'title': title,
+                    'publisher': publisher,
+                    'link': link,
+                    'summary': summary,
+                    'key_sentence': key_sentence.strip(),
+                    'impact': impact
+                })
             
             return analyzed_results if analyzed_results else fallback_news
             
         except Exception as e: 
             return fallback_news
-
-    def _fallback_single_news(self, n):
-        content = n.get('content', n)
-        return {
-            'title': content.get('title', ''),
-            'publisher': content.get('provider', {}).get('displayName', 'Unknown'),
-            'link': content.get('clickThroughUrl', {}).get('url', '#'),
-            'key_sentence': content.get('summary', '')[:100] + "... (AI 분석 실패)",
-            'impact': "⚪ 기타(중립)"
-        }
-
-    def _basic_news_extract(self, filtered_news):
-        analyzed_news = []
-        for n in filtered_news:
-            content = n.get('content', n)
-            analyzed_news.append({
-                'title': content.get('title', ''),
-                'publisher': content.get('provider', {}).get('displayName', 'Unknown Source'),
-                'link': content.get('clickThroughUrl', {}).get('url', '#'),
-                'key_sentence': content.get('summary', 'API 키를 입력하면 AI가 핵심 팩트를 추출합니다.'),
-                'impact': "⚪ AI 연동 대기중"
-            })
-        return analyzed_news
 
 # 저점 매수 특화 의사결정
 def analyze_dip_signal(df, vix, spy_drop):
@@ -213,14 +211,14 @@ def analyze_dip_signal(df, vix, spy_drop):
     elif dip_score >= 50:
         decision, color = "저점 진입 대기", "#ffff00"
         reasons = [f"할인 구간 진입(Dip Score {dip_score:.0f}점). 바닥 지지 대기 중."]
-    elif price > ema20 and prev['Close'] < prev['EMA20']:
+    elif price > ema20 and prev['Close'] <= prev['EMA20']:
         decision, color = "강력 홀딩 (반등장)", "#008000"
         dip_score = 30
-        reasons = ["EMA20 단기 추세선 돌파. 수익 극대화 구간."]
+        reasons = ["어제까지 EMA20 아래였으나, 오늘 상승 돌파 성공.", "하락 추세를 끝내고 본격적인 반등이 시작되는 초기 지점."]
     elif price > ema20:
         decision, color = "강력 홀딩", "#008000"
         dip_score = 10
-        reasons = ["우상향 추세 진행 중."]
+        reasons = ["우상향 추세 안정적으로 진행 중."]
     elif price < ema20 and prev['Close'] >= prev['EMA20']:
         decision, color = "일반 익절", "#ff6600"
         dip_score = 0
@@ -231,9 +229,9 @@ def analyze_dip_signal(df, vix, spy_drop):
 
     return decision, color, reasons, dip_score
 
-# 공통 분석 렌더링 함수
-def render_analysis_ui(ticker, api_key):
-    with st.spinner(f"'{ticker}' 기술적 지표 및 AI 뉴스 분석 중..."):
+# UI 렌더링
+def render_analysis_ui(ticker):
+    with st.spinner(f"'{ticker}' 기술적 지표 및 자체 엔진 뉴스 분석 중..."):
         engine = ProfessionalQuant(ticker)
         df = engine.get_enriched_data()
         if df is not None:
@@ -268,29 +266,28 @@ def render_analysis_ui(ticker, api_key):
             - <span style='color:#ff0000;'><b>긴급 매도</b></span>: 매크로 시스템 붕괴 (VIX 38↑ 등) 시 전량 현금화.<br>
             - <span style='color:#00ff00;'><b>매수 적기 (100%)</b></span>: 충분한 하락 후 저점 지지(Bottoming)가 확인된 최적의 100% 진입 타점.<br>
             - <span style='color:#ffff00;'><b>저점 진입 대기</b></span>: 주가가 할인 구간에 들어왔으나, 아직 하락세가 완전히 멈추지 않아 지지를 기다리는 상태.<br>
-            - <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 유지 중인 상태 (신규 진입 금지, 보유자 영역).<br>
+            - <span style='color:#008000;'><b>강력 홀딩 (반등장)</b></span>: 계속 하락하다가 방금 막 상승 추세선(EMA20)을 뚫고 올라온 '상승 초입' 구간.<br>
+            - <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 안정적으로 유지 중인 상태 (보유자 영역).<br>
             - <span style='color:#ff6600;'><b>일반 익절</b></span>: 상승 추세선(EMA20)이 무너지며 단기 모멘텀이 꺾인 수익 확정 타점.<br>
             - <span style='color:#888888;'><b>관망</b></span>: 방향성이 모호한 중립 구간.
             </div>
             """, unsafe_allow_html=True)
 
             st.write("---")
-            st.write("#### 📰 AI 팩트 체크 및 투심 분석")
-            news = engine.analyze_news_with_ai(api_key)
+            st.write("#### 📰 팩트 체크 및 투심 분석 (Engine Ver.)")
+            news = engine.analyze_news_local()
             for n in news:
                 with st.expander(f"[{n['impact']}] {n['title']}", expanded=True):
                     st.write(f"**출처:** {n['publisher']}")
-                    st.write(f"**AI 분석 핵심 팩트:** {n['key_sentence']}")
+                    st.write(f"**핵심 증거 문장:** {n['key_sentence']}")
+                    st.write(f"**국문 번역:** {engine.translate_text(n['key_sentence'])}")
                     st.write(f"[원문 기사 보기]({n['link']})")
         else:
             st.error("데이터 로드 실패.")
 
 # --- 앱 메인 ---
 st.title("⚖️ Wall Street Quant: Buy The Dip Engine")
-st.markdown("<p style='color:#00ff00;'>초우량주 전용 저점 포착 및 AI 뉴스 분석 터미널</p>", unsafe_allow_html=True)
-
-# 상단에 API 키 입력란 추가 (뉴스 분석용)
-api_key = st.text_input("Gemini API Key (뉴스 문맥 분석용):", type="password", placeholder="AI 뉴스 판별을 원하시면 키를 입력하세요")
+st.markdown("<p style='color:#00ff00;'>초우량주 전용 저점 포착 및 자체 팩트 체크 터미널</p>", unsafe_allow_html=True)
 
 WATCH_LIST = [
     'MSFT', 'AAPL', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO', 'ASML', 'LRCX',
@@ -308,7 +305,7 @@ with tab1:
     ticker = st.text_input("분석 티커 입력 (예: MSFT, NVDA):", placeholder="NVDA").upper()
     if st.button("저점 타점 분석 실행"):
         if ticker:
-            render_analysis_ui(ticker, api_key)
+            render_analysis_ui(ticker)
 
 with tab2:
     st.markdown("### 🏆 가장 싸게 살 수 있는 초우량주 순위 (Dip Score 기준)")
@@ -356,7 +353,8 @@ with tab2:
         - <span style='color:#ff0000;'><b>긴급 매도</b></span>: 매크로 시스템 붕괴 (VIX 38↑ 등) 시 전량 현금화.<br>
         - <span style='color:#00ff00;'><b>매수 적기 (100%)</b></span>: 하락 후 저점 지지(Bottoming)가 확인된 최적의 100% 진입 타점.<br>
         - <span style='color:#ffff00;'><b>저점 진입 대기</b></span>: 할인 구간에 들어왔으나, 아직 하락세가 멈추지 않아 지지를 기다리는 상태.<br>
-        - <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 유지 중 (신규 진입 금지).<br>
+        - <span style='color:#008000;'><b>강력 홀딩 (반등장)</b></span>: 어제까지 하락 추세였으나, 오늘 <b>상승 추세선(EMA20)을 뚫고 올라온 반등 초기 시점.</b><br>
+        - <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 안정적으로 유지 중 (신규 진입 금지).<br>
         - <span style='color:#ff6600;'><b>일반 익절</b></span>: 상승 추세선(EMA20)이 무너지며 단기 모멘텀이 꺾인 수익 확정 타점.<br>
         - <span style='color:#888888;'><b>관망</b></span>: 방향성이 모호한 중립 구간.
         </div>
@@ -367,10 +365,22 @@ with tab2:
         selected_ticker = st.selectbox("위 순위표에서 정밀 분석할 티커를 선택하세요:", ["선택하세요"] + st.session_state.scan_results['TICKER'].tolist())
         
         if selected_ticker != "선택하세요":
-            render_analysis_ui(selected_ticker, api_key)
+            render_analysis_ui(selected_ticker)
 
-# 리스크 체크 (사이드바 숨김 대신 하단 배치)
-st.write("---")
+st.sidebar.title("🏛️ INVEST PRINCIPLES")
+st.sidebar.markdown("""
+**[목적]**
+비전이 훌륭하여 장기 우상향이 확실한 초대형 우량주의 **최적의 저점 매수(Buy the Dip)** 타이밍을 포착.
+
+**[운칙]**
+- **자금**: 무조건 전재산 100% 매수/매도
+- **손절**: 대폭락(Mega-crash) 외 절대 금지
+- **매수**: 하락 멈춤 및 저점 지지 확인 시
+- **익절**: 기술적 상승 추세 꺾임 시
+""")
+
+# 상시 감시 바
 v, s = ProfessionalQuant("SPY").get_macro_data()
 if v > 35 or s > 15: st.error(f"🚨 시스템 폭락 경보: VIX {v:.2f}")
 else: st.success(f"✅ 거시 경제 안정: VIX {v:.2f}")
+
