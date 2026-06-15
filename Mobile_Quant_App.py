@@ -64,6 +64,67 @@ class ProfessionalQuant:
             return vix, spy_drop
         except: return 0, 0
 
+    def translate_text(self, text):
+        try:
+            url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text[:400])}&langpair=en|ko"
+            response = requests.get(url, timeout=5)
+            data = response.json()
+            if data.get('responseStatus') == 200:
+                return data.get('responseData').get('translatedText')
+            return "번역 한도 초과 또는 일시적 오류"
+        except: return "번역 서버 연결 실패"
+
+    def analyze_news(self):
+        # 뉴스가 아예 없는 상황을 방지하기 위한 기본 폴백(Fallback) 메시지 세팅
+        fallback_news = [{
+            'title': f"{self.ticker} 최근 주요 변동 사항 없음",
+            'publisher': "System Analyst",
+            'link': "#",
+            'summary': "현재 시장에서 해당 종목의 펀더멘털을 훼손할 만한 치명적 악재나 급격한 호재가 포착되지 않았습니다.",
+            'key_sentence': "No significant news reported recently. The fundamental remains stable.",
+            'impact': "⚪ 기타(중립)"
+        }]
+
+        try:
+            news_list = self.stock.news
+            if not news_list: return fallback_news
+            
+            impact_keywords = ['crash', 'collapse', 'recession', 'slump', 'downfall', 'bankruptcy', 'bear market', 'inflation', 'rate hike', 'layoff', 'lawsuit', 'investigation', 'plunge', 'missed']
+            positive_keywords = ['growth', 'breakthrough', 'dividend', 'buyback', 'partnership', 'earnings beat', 'upgrade', 'surge', 'record', 'soar']
+            
+            analyzed_news = []
+            for n in news_list[:3]:
+                content = n.get('content', n)
+                title = content.get('title', '')
+                summary = content.get('summary', '요약 정보 없음')
+                provider = content.get('provider', {}).get('displayName', 'Unknown Source')
+                link = content.get('clickThroughUrl', {}).get('url', '#')
+                
+                # 감성 분석 (호재/악재 판별)
+                is_neg = any(kw in title.lower() or kw in summary.lower() for kw in impact_keywords)
+                is_pos = any(kw in title.lower() or kw in summary.lower() for kw in positive_keywords)
+                
+                if is_pos: impact = "🟢 호재"
+                elif is_neg: impact = "🔴 악재"
+                else: impact = "⚪ 기타(중립)"
+                
+                # 핵심 문장 추출 (키워드가 포함된 문장 또는 첫 문장)
+                sentences = summary.split('. ')
+                key_sentence = next((s + "." for s in sentences if any(kw in s.lower() for kw in impact_keywords + positive_keywords)), sentences[0] + "." if sentences else title)
+                
+                analyzed_news.append({
+                    'title': title,
+                    'publisher': provider,
+                    'link': link,
+                    'summary': summary,
+                    'key_sentence': key_sentence,
+                    'impact': impact
+                })
+            
+            return analyzed_news if analyzed_news else fallback_news
+        except: 
+            return fallback_news
+
 # 저점 매수(Buy the Dip) 특화 의사결정 알고리즘
 def analyze_dip_signal(df, vix, spy_drop):
     curr = df.iloc[-1]
@@ -75,20 +136,13 @@ def analyze_dip_signal(df, vix, spy_drop):
     ema20 = curr['EMA20']
     
     # 1. 저점 매수 매력도 (Dip Score) 계산 (100점 만점)
-    # 우량주는 언젠가 오른다는 전제하에, "얼마나 싸게, 안전하게 살 수 있는가?"를 수치화
-    
-    # RSI 점수 (RSI가 45 이하일 때부터 점수 부여, 낮을수록 고득점)
     rsi_score = max(0, (45 - rsi) * 2.5) 
-    
-    # 이격도 점수 (EMA60선 아래로 떨어질수록 고득점, 즉 100% 미만일 때)
     disp_score = max(0, (100 - disparity) * 3) 
     
-    # 바닥 확인 가점 (떨어지는 칼날 피하기)
     recent_min = df['Low'].iloc[-5:].min()
-    is_bottoming = price >= recent_min * 1.015 # 최근 5일 최저점 대비 1.5% 이상 반등했는가?
-    bottom_bonus = 20 if is_bottoming else -20 # 아직 하락 중이면 감점
+    is_bottoming = price >= recent_min * 1.015
+    bottom_bonus = 20 if is_bottoming else -20
     
-    # 총점 계산
     dip_score = min(100, max(0, rsi_score + disp_score + bottom_bonus))
     
     # 2. 상태(Action) 결정
@@ -115,11 +169,11 @@ def analyze_dip_signal(df, vix, spy_drop):
         ]
     elif price > ema20 and prev['Close'] < prev['EMA20']:
         decision, color = "강력 홀딩 (반등장)", "#008000"
-        dip_score = 30 # 이미 올랐으므로 신규 매수 점수는 낮음
+        dip_score = 30
         reasons = ["저점을 다지고 단기 추세선(EMA20)을 돌파함.", "보유자 영역. 수익 극대화."]
     elif price > ema20:
         decision, color = "강력 홀딩", "#008000"
-        dip_score = 10 # 고점 영역
+        dip_score = 10
         reasons = ["우상향 추세 진행 중.", "신규 '저점 매수' 타점은 이미 지나감."]
     elif price < ema20 and prev['Close'] >= prev['EMA20']:
         decision, color = "일반 익절", "#ff6600"
@@ -130,6 +184,53 @@ def analyze_dip_signal(df, vix, spy_drop):
         reasons = ["현재가와 지표가 애매한 중간 지대에 위치함."]
 
     return decision, color, reasons, dip_score
+
+# 공통 분석 렌더링 함수
+def render_analysis_ui(ticker):
+    with st.spinner(f"'{ticker}' 데이터 추출 및 심층 분석 중..."):
+        engine = ProfessionalQuant(ticker)
+        df = engine.get_enriched_data()
+        if df is not None:
+            vix, spy_drop = engine.get_macro_data()
+            decision, color, reasons, dip_score = analyze_dip_signal(df, vix, spy_drop)
+            
+            st.markdown(f"""
+                <div class='report-card' style='border-left-color:{color};'>
+                    <h1 style='color:{color}; margin-bottom:0px;'>{decision}</h1>
+                    <p style='color:gray; font-size:0.9em;'>※ 100% 매매 원칙에 의거한 결론입니다.</p>
+                    <p style='font-size:1.1em; margin-top:20px;'><b>[팩트 기반 근거]:</b></p>
+                    <ul>
+                        {"".join(f"<li>{r}</li>" for r in reasons)}
+                    </ul>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            c1, c2, c3, c4 = st.columns(4)
+            c1.markdown(f"<div class='metric-box'>현재가<br><b>${df['Close'].iloc[-1]:,.2f}</b></div>", unsafe_allow_html=True)
+            c2.markdown(f"<div class='metric-box'>RSI<br><b>{df['RSI'].iloc[-1]:.2f}</b></div>", unsafe_allow_html=True)
+            c3.markdown(f"<div class='metric-box'>이격도(EMA60)<br><b>{df['Disparity'].iloc[-1]:.2f}%</b></div>", unsafe_allow_html=True)
+            c4.markdown(f"<div class='metric-box'><b>저점 매력도 (Dip Score)</b><br><span class='dip-score'>{dip_score:.0f}점</span></div>", unsafe_allow_html=True)
+            
+            st.markdown("""
+            <div style='font-size: 0.85em; color: #888; margin-top: 15px; padding: 10px; border: 1px dashed #333;'>
+            <b>※ 지표 설명</b><br>
+            - <b>RSI (Relative Strength Index)</b>: 30 이하일 경우 강력한 과매도(주가 바닥) 상태를 의미합니다.<br>
+            - <b>이격도 (Disparity)</b>: 현재 주가가 장기 평균(60일선) 대비 얼마나 높은지/낮은지를 나타냅니다. 100% 미만이면 평균보다 싸게 거래 중임을 의미합니다.<br>
+            - <b>Dip Score</b>: RSI, 이격도, 최근 바닥 지지 여부를 종합해 산출한 '저점 매수 타점 점수'입니다. 80점 이상 시 전재산 진입을 고려합니다.
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.write("---")
+            st.write("#### 📰 뉴스 팩트 및 투심 분석")
+            news = engine.analyze_news()
+            for n in news:
+                with st.expander(f"[{n['impact']}] {n['title']}", expanded=True):
+                    st.write(f"**출처:** {n['publisher']}")
+                    st.write(f"**핵심 문장(Key Sentence):** {n['key_sentence']}")
+                    st.write(f"**번역(Translation):** {engine.translate_text(n['key_sentence'])}")
+                    st.write(f"[원문 전체 보기]({n['link']})")
+        else:
+            st.error("데이터 로드 실패.")
 
 # --- 앱 인터페이스 ---
 st.title("⚖️ Wall Street Quant: Buy The Dip Engine")
@@ -142,46 +243,17 @@ WATCH_LIST = [
     'ASTS', 'RKLB'
 ]
 
+# 세션 상태 초기화 (랭킹 데이터 보존용)
+if "scan_results" not in st.session_state:
+    st.session_state.scan_results = None
+
 tab1, tab2 = st.tabs(["[ 📊 개별 종목 저점 분석 ]", "[ 🏆 실시간 저점 매수 랭킹 ]"])
 
 with tab1:
     ticker = st.text_input("분석 티커 입력 (예: MSFT, NVDA):", placeholder="NVDA").upper()
     if st.button("저점 타점 분석 실행"):
         if ticker:
-            with st.spinner("데이터 추출 및 Dip Score 계산 중..."):
-                engine = ProfessionalQuant(ticker)
-                df = engine.get_enriched_data()
-                if df is not None:
-                    vix, spy_drop = engine.get_macro_data()
-                    decision, color, reasons, dip_score = analyze_dip_signal(df, vix, spy_drop)
-                    
-                    st.markdown(f"""
-                        <div class='report-card' style='border-left-color:{color};'>
-                            <h1 style='color:{color}; margin-bottom:0px;'>{decision}</h1>
-                            <p style='color:gray; font-size:0.9em;'>※ 100% 매매 원칙에 의거한 결론입니다.</p>
-                            <p style='font-size:1.1em; margin-top:20px;'><b>[팩트 기반 근거]:</b></p>
-                            <ul>
-                                {"".join(f"<li>{r}</li>" for r in reasons)}
-                            </ul>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.markdown(f"<div class='metric-box'>현재가<br><b>${df['Close'].iloc[-1]:,.2f}</b></div>", unsafe_allow_html=True)
-                    c2.markdown(f"<div class='metric-box'>RSI<br><b>{df['RSI'].iloc[-1]:.2f}</b></div>", unsafe_allow_html=True)
-                    c3.markdown(f"<div class='metric-box'>이격도(EMA60)<br><b>{df['Disparity'].iloc[-1]:.2f}%</b></div>", unsafe_allow_html=True)
-                    c4.markdown(f"<div class='metric-box'><b>저점 매력도 (Dip Score)</b><br><span class='dip-score'>{dip_score:.0f}점</span></div>", unsafe_allow_html=True)
-                    
-                    st.write("---")
-                    st.write("#### 📰 뉴스 팩트 체크")
-                    try:
-                        for n in engine.stock.news[:3]:
-                            with st.expander(f"📰 {n.get('content', n).get('title', '제목 없음')}"):
-                                st.write(n.get('content', n).get('summary', '요약 없음'))
-                                st.write(f"[원문 링크]({n.get('content', n).get('clickThroughUrl', {}).get('url', '#')})")
-                    except: st.write("뉴스 데이터를 불러오지 못했습니다.")
-                else:
-                    st.error("데이터 로드 실패.")
+            render_analysis_ui(ticker)
 
 with tab2:
     st.markdown("### 🏆 가장 싸게 살 수 있는 초우량주 순위 (Dip Score 기준)")
@@ -216,8 +288,30 @@ with tab2:
         df_rank['DIP SCORE'] = df_rank['DIP SCORE'].apply(lambda x: f"{x:.1f}점")
         df_rank.insert(0, 'RANK', range(1, len(df_rank) + 1))
         
-        st.dataframe(df_rank, hide_index=True, use_container_width=True)
-        st.caption("※ 이격도가 100% 미만이고 RSI가 낮을수록 점수가 높습니다. '매수 적기' 시그널이 뜬 상위 종목에 전재산 100% 진입을 고려하십시오.")
+        # 결과를 세션 스테이트에 저장
+        st.session_state.scan_results = df_rank
+
+    # 스캔 결과가 있으면 화면에 표시하고 연동 분석 기능 제공
+    if st.session_state.scan_results is not None:
+        st.dataframe(st.session_state.scan_results, hide_index=True, use_container_width=True)
+        
+        st.markdown("""
+        <div style='font-size: 0.85em; color: #888; margin-top: 10px; padding: 10px; border: 1px dashed #333;'>
+        <b>※ 항목 설명</b><br>
+        - <b>RSI</b>: 낮을수록 하락 압력이 컸음(저점 가능성)을 의미합니다. (통상 30 이하 시 과매도)<br>
+        - <b>DISPARITY(%)</b>: 60일 이동평균선 대비 현재 가격. 100% 미만은 장기 추세선보다 싸게 거래되고 있음을 나타냅니다.<br>
+        - <b>DIP SCORE</b>: 과매도(RSI), 할인율(이격도), 하락세 진정(Bottoming)을 종합한 100점 만점의 점수. 높을수록 '매수 적기' 타점입니다.
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.write("---")
+        st.subheader("🔍 순위권 종목 정밀 분석")
+        
+        # 순위표에서 티커를 선택하면 자동으로 심층 분석 렌더링
+        selected_ticker = st.selectbox("위 순위표에서 정밀 분석할 티커를 선택하세요:", ["선택하세요"] + st.session_state.scan_results['TICKER'].tolist())
+        
+        if selected_ticker != "선택하세요":
+            render_analysis_ui(selected_ticker)
 
 st.sidebar.title("🏛️ INVEST PRINCIPLES")
 st.sidebar.markdown("""
