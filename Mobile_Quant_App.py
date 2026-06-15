@@ -265,7 +265,7 @@ with tab2:
         
         # 테이블 스타일링 및 출력
         st.write("### 🏆 실시간 진입 추천 순위")
-        st.dataframe(df_res, hide_index=True, use_container_with_all_columns=True)
+        st.dataframe(df_res, hide_index=True, use_container_width=True)
         st.caption("※ 상위권 종목일수록 시스템 원칙에 부합하는 매수 기회입니다.")
         
         # 상세 보기 기능 (티커 선택 시 즉시 분석)
