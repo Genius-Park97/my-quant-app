@@ -45,6 +45,24 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# --- 상수 및 유틸리티 ---
+METRIC_EXPLANATION = """
+<div class='info-box'>
+<b>📊 주요 지표 설명</b><br>
+- <b>RSI</b>: 30 이하면 강력한 과매도(바닥) 상태.<br>
+- <b>DISPARITY(%)</b>: 100% 미만이면 장기 평균(60일선)보다 싸게 거래 중임을 의미.<br>
+- <b>DIP SCORE</b>: 과매도, 할인율, 바닥 지지 여부를 종합한 점수. 80점 이상 시 타점 유효.<br><br>
+<b>🚨 의사결정(ACTION) 기준</b><br>
+- <span style='color:#ff0000;'><b>긴급 매도</b></span>: 매크로 시스템 붕괴 (VIX 38↑ 등) 시 전량 현금화.<br>
+- <span style='color:#00ff00;'><b>매수 적기 (100%)</b></span>: 충분한 하락 후 저점 지지(Bottoming)가 확인된 최적의 100% 진입 타점.<br>
+- <span style='color:#ffff00;'><b>저점 진입 대기</b></span>: 주가가 할인 구간에 들어왔으나, 아직 하락세가 완전히 멈추지 않아 지지를 기다리는 상태.<br>
+- <span style='color:#008000;'><b>강력 홀딩 (반등장)</b></span>: 계속 하락하다가 방금 막 상승 추세선(EMA20)을 뚫고 올라온 '상승 초입' 구간.<br>
+- <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 안정적으로 유지 중인 상태 (보유자 영역).<br>
+- <span style='color:#ff6600;'><b>일반 익절</b></span>: 상승 추세선(EMA20)이 무너지며 단기 모멘텀이 꺾인 수익 확정 타점.<br>
+- <span style='color:#888888;'><b>관망</b></span>: 방향성이 모호한 중립 구간.
+</div>
+"""
+
 class ProfessionalQuant:
     def __init__(self, ticker):
         self.ticker = ticker.upper()
@@ -60,10 +78,33 @@ class ProfessionalQuant:
         }
         self.sia.lexicon.update(financial_lexicon)
         
+    def get_current_price(self):
+        """실시간 현재가 추출 (다양한 소스 시도)"""
+        try:
+            # 1. fast_info 우선 (가장 빠름)
+            price = self.stock.fast_info.get('last_price')
+            if price and not np.isnan(price): return price
+            
+            # 2. info (상세 정보)
+            price = self.stock.info.get('regularMarketPrice') or self.stock.info.get('currentPrice')
+            if price and not np.isnan(price): return price
+            
+            # 3. history 마지막 값
+            df = self.stock.history(period="1d")
+            if not df.empty: return df['Close'].iloc[-1]
+            
+            return None
+        except: return None
+
     def get_enriched_data(self):
         try:
             df = self.stock.history(period="1y", interval="1d")
             if df.empty or len(df) < 60: return None
+            
+            # 실시간 가격 반영 (마지막 종가를 현재가로 업데이트)
+            current_price = self.get_current_price()
+            if current_price:
+                df.iloc[-1, df.columns.get_loc('Close')] = current_price
             
             # RSI 계산
             delta = df['Close'].diff()
@@ -263,23 +304,6 @@ def render_analysis_ui(ticker):
             c3.markdown(f"<div class='metric-box'>이격도(EMA60)<br><b>{df['Disparity'].iloc[-1]:.2f}%</b></div>", unsafe_allow_html=True)
             c4.markdown(f"<div class='metric-box'><b>저점 매력도 (Dip Score)</b><br><span class='dip-score'>{dip_score:.0f}점</span></div>", unsafe_allow_html=True)
             
-            st.markdown("""
-            <div class='info-box'>
-            <b>📊 주요 지표 설명</b><br>
-            - <b>RSI</b>: 30 이하면 강력한 과매도(바닥) 상태.<br>
-            - <b>DISPARITY(%)</b>: 100% 미만이면 장기 평균(60일선)보다 싸게 거래 중임을 의미.<br>
-            - <b>DIP SCORE</b>: 과매도, 할인율, 바닥 지지 여부를 종합한 점수. 80점 이상 시 타점 유효.<br><br>
-            <b>🚨 의사결정(ACTION) 기준</b><br>
-            - <span style='color:#ff0000;'><b>긴급 매도</b></span>: 매크로 시스템 붕괴 (VIX 38↑ 등) 시 전량 현금화.<br>
-            - <span style='color:#00ff00;'><b>매수 적기 (100%)</b></span>: 충분한 하락 후 저점 지지(Bottoming)가 확인된 최적의 100% 진입 타점.<br>
-            - <span style='color:#ffff00;'><b>저점 진입 대기</b></span>: 주가가 할인 구간에 들어왔으나, 아직 하락세가 완전히 멈추지 않아 지지를 기다리는 상태.<br>
-            - <span style='color:#008000;'><b>강력 홀딩 (반등장)</b></span>: 계속 하락하다가 방금 막 상승 추세선(EMA20)을 뚫고 올라온 '상승 초입' 구간.<br>
-            - <span style='color:#008000;'><b>강력 홀딩</b></span>: 이미 반등하여 상승 추세(EMA20 상회)를 탔거나 안정적으로 유지 중인 상태 (보유자 영역).<br>
-            - <span style='color:#ff6600;'><b>일반 익절</b></span>: 상승 추세선(EMA20)이 무너지며 단기 모멘텀이 꺾인 수익 확정 타점.<br>
-            - <span style='color:#888888;'><b>관망</b></span>: 방향성이 모호한 중립 구간.
-            </div>
-            """, unsafe_allow_html=True)
-
             st.write("---")
             st.write("#### 📰 팩트 체크 및 투심 분석 (VADER NLP Engine)")
             news = engine.analyze_news_local()
@@ -290,7 +314,7 @@ def render_analysis_ui(ticker):
                     st.write(f"**국문 번역:** {engine.translate_text(n['key_sentence'])}")
                     st.write(f"[원문 기사 보기]({n['link']})")
         else:
-            st.error("데이터 로드 실패. (스페이스X와 같은 비상장 기업은 아직 데이터가 없을 수 있습니다.)")
+            st.error("데이터 로드 실패. 티커가 정확한지, 혹은 상장 폐지/비상장 여부를 확인해주세요.")
 
 # --- 앱 메인 ---
 st.title("⚖️ Wall Street Quant: Buy The Dip Engine")
@@ -300,7 +324,7 @@ WATCH_LIST = [
     'MSFT', 'AAPL', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO', 'ASML', 'LRCX',
     'AMAT', 'ORCL', 'ADBE', 'ISRG', 'INTU', 'PANW', 'VRT', 'BRK-B', 'JPM', 'V',
     'MA', 'BX', 'LLY', 'UNH', 'TMO', 'SYK', 'COST', 'WMT', 'PEP', 'HD', 'NFLX', 'XOM', 'PWR',
-    'ASTS', 'RKLB', 'SPACE'
+    'ASTS', 'RKLB', 'SPCE'
 ]
 
 if "scan_results" not in st.session_state:
@@ -309,10 +333,12 @@ if "scan_results" not in st.session_state:
 tab1, tab2 = st.tabs(["[ 📊 개별 종목 저점 분석 ]", "[ 🏆 실시간 저점 매수 랭킹 ]"])
 
 with tab1:
-    ticker = st.text_input("분석 티커 입력 (예: MSFT, NVDA, SPACE):", placeholder="NVDA").upper()
+    ticker = st.text_input("분석 티커 입력 (예: MSFT, NVDA, SPCE):", placeholder="NVDA").upper()
     if st.button("저점 타점 분석 실행"):
         if ticker:
             render_analysis_ui(ticker)
+    
+    st.markdown(METRIC_EXPLANATION, unsafe_allow_html=True)
 
 with tab2:
     st.markdown("### 🏆 가장 싸게 살 수 있는 초우량주 순위 (Dip Score 기준)")
@@ -356,6 +382,8 @@ with tab2:
         
         if selected_ticker != "선택하세요":
             render_analysis_ui(selected_ticker)
+            
+    st.markdown(METRIC_EXPLANATION, unsafe_allow_html=True)
 
 st.sidebar.title("🏛️ INVEST PRINCIPLES")
 st.sidebar.markdown("""
