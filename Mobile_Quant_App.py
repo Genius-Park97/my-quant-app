@@ -79,37 +79,43 @@ class ProfessionalQuant:
         self.sia.lexicon.update(financial_lexicon)
         
     def get_current_price(self):
-        """실시간 현재가 추출 (다양한 소스 시도)"""
+        """실시간 현재가 추출 (가장 확실한 소스부터)"""
         try:
-            # 1. fast_info 우선 (가장 빠름)
-            price = self.stock.fast_info.get('last_price')
-            if price and not np.isnan(price): return price
+            # 1. history(1d) 우선 - 가장 정확하고 최신
+            df = self.stock.history(period="1d", interval="1m") # 1분 단위 최신 데이터
+            if not df.empty: return df['Close'].iloc[-1]
             
-            # 2. info (상세 정보)
+            # 2. 1d 데이터가 없으면(장외 등) 일간 history 마지막 값
+            df_day = self.stock.history(period="5d")
+            if not df_day.empty: return df_day['Close'].iloc[-1]
+            
+            # 3. 최후의 수단으로 info (속도가 느리므로 마지막에 시도)
             price = self.stock.info.get('regularMarketPrice') or self.stock.info.get('currentPrice')
             if price and not np.isnan(price): return price
-            
-            # 3. history 마지막 값
-            df = self.stock.history(period="1d")
-            if not df.empty: return df['Close'].iloc[-1]
             
             return None
         except: return None
 
     def get_enriched_data(self):
         try:
+            # 기간 연장 및 안정성 확보
             df = self.stock.history(period="1y", interval="1d")
             if df.empty or len(df) < 60: return None
             
             # 실시간 가격 반영 (마지막 종가를 현재가로 업데이트)
             current_price = self.get_current_price()
-            if current_price:
+            if current_price and not np.isnan(current_price):
                 df.iloc[-1, df.columns.get_loc('Close')] = current_price
+            
+            # 데이터 정제 (NaN 제거)
+            df = df.ffill()
             
             # RSI 계산
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            # 0으로 나누기 방지
+            loss = loss.replace(0, np.nan).fillna(1e-9)
             df['RSI'] = 100 - (100 / (1 + (gain / loss)))
             
             # 이동평균 및 이격도
@@ -118,7 +124,8 @@ class ProfessionalQuant:
             df['Disparity'] = (df['Close'] / df['EMA60']) * 100 
             
             return df
-        except: return None
+        except Exception as e:
+            return None
 
     def get_macro_data(self):
         try:
@@ -346,14 +353,34 @@ with tab2:
     if st.button("전체 종목 저점 스캔 실행"):
         results = []
         vix, spy_drop = ProfessionalQuant("SPY").get_macro_data()
+        
+        # 1. 일괄 다운로드 (속도 및 안정성 극대화)
+        with st.spinner("전체 종목 시장 데이터 일괄 로드 중..."):
+            all_data = yf.download(WATCH_LIST, period="1y", interval="1d", group_by='ticker', threads=True)
+        
         progress = st.progress(0)
         
         for i, t in enumerate(WATCH_LIST):
             progress.progress((i + 1) / len(WATCH_LIST))
             try:
-                e = ProfessionalQuant(t)
-                d = e.get_enriched_data()
-                if d is None: continue
+                # 개별 티커 데이터 추출
+                if len(WATCH_LIST) > 1:
+                    d = all_data[t].copy()
+                else:
+                    d = all_data.copy()
+                
+                if d.empty or len(d) < 60: continue
+                
+                # NaN 처리 및 지표 계산 (ProfessionalQuant 로직 복제/간소화)
+                d = d.ffill()
+                delta = d['Close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean().replace(0, 1e-9)
+                d['RSI'] = 100 - (100 / (1 + (gain / loss)))
+                d['EMA20'] = d['Close'].ewm(span=20, adjust=False).mean()
+                d['EMA60'] = d['Close'].ewm(span=60, adjust=False).mean()
+                d['Disparity'] = (d['Close'] / d['EMA60']) * 100
+                
                 dec, col, _, score = analyze_dip_signal(d, vix, spy_drop)
                 results.append({
                     'TICKER': t,
@@ -363,15 +390,18 @@ with tab2:
                     'ACTION': dec,
                     'DIP SCORE': score
                 })
-            except: continue
+            except Exception as e: 
+                continue
             
-        df_rank = pd.DataFrame(results).sort_values(by='DIP SCORE', ascending=False)
-        df_rank['DISPARITY(%)'] = df_rank['DISPARITY(%)'].apply(lambda x: f"{x:.1f}%")
-        df_rank['RSI'] = df_rank['RSI'].apply(lambda x: f"{x:.1f}")
-        df_rank['DIP SCORE'] = df_rank['DIP SCORE'].apply(lambda x: f"{x:.1f}점")
-        df_rank.insert(0, 'RANK', range(1, len(df_rank) + 1))
-        
-        st.session_state.scan_results = df_rank
+        if results:
+            df_rank = pd.DataFrame(results).sort_values(by='DIP SCORE', ascending=False)
+            df_rank['DISPARITY(%)'] = df_rank['DISPARITY(%)'].apply(lambda x: f"{x:.1f}%")
+            df_rank['RSI'] = df_rank['RSI'].apply(lambda x: f"{x:.1f}")
+            df_rank['DIP SCORE'] = df_rank['DIP SCORE'].apply(lambda x: f"{x:.1f}점")
+            df_rank.insert(0, 'RANK', range(1, len(df_rank) + 1))
+            st.session_state.scan_results = df_rank
+        else:
+            st.error("스캔 결과가 없습니다. 네트워크 상태를 확인해주세요.")
 
     if st.session_state.scan_results is not None:
         st.dataframe(st.session_state.scan_results, hide_index=True, use_container_width=True)
